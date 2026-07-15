@@ -9,3 +9,7 @@ The `main` branch rejects force pushes and deletion. Updates are serialized by
 the custodian workflow, and each resulting `anchors.json` is attested by GitHub
 Actions OIDC. The private verifier requires a continuous root chain and the
 latest attested public anchor before corpus intake, consumption, or final DoD.
+
+The public event chronology covers quarantine, assignment, truth sealing,
+one-time source release, consumption, execution sealing, judge challenges, and
+judge result sealing. Only hash commitments and event metadata are public.

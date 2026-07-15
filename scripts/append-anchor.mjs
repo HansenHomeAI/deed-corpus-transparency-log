@@ -5,7 +5,16 @@ import { readFileSync, writeFileSync } from "node:fs";
 
 const SHA256 = /^[a-f0-9]{64}$/;
 const ZERO = "0".repeat(64);
-const KINDS = new Set(["legacy-quarantine", "assign", "truth-seal", "consume"]);
+const KINDS = new Set([
+  "legacy-quarantine",
+  "assign",
+  "truth-seal",
+  "source-release",
+  "consume",
+  "execution-seal",
+  "judge-challenge",
+  "judge-seal",
+]);
 
 const fileIndex = process.argv.indexOf("--file");
 const requestIndex = process.argv.indexOf("--request-base64url");
@@ -75,4 +84,3 @@ function stableJson(value) {
   if (value && typeof value === "object") return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(",")}}`;
   return JSON.stringify(value);
 }
-
