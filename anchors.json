@@ -2,6 +2,18 @@
   "schemaVersion": 1,
   "log": "spaceport-deed-corpus-registry-roots",
   "sourceRepository": "HansenHomeAI/Autodesk-automation",
-  "events": []
+  "events": [
+    {
+      "schemaVersion": 1,
+      "sequence": 1,
+      "previousAnchorEventSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "previousPrivateRegistryRootSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "privateRegistryRootSha256": "4595760e04bcfca8fabf185929d662c4d6ac15d6bc4856b9676314b38507c45e",
+      "privateRegistryEventCount": 1,
+      "kind": "legacy-quarantine",
+      "requestNonce": "074955276b410e707c4d1a3261853cc2d83f9cffa2ef8e97ffdd1adc24520be7",
+      "issuedAt": "2026-07-15T21:37:54.748Z",
+      "anchorEventSha256": "316544f43bc145c6345552245a197dac0b68bda4d79dfdb4455a0c17844bee98"
+    }
+  ]
 }
-
