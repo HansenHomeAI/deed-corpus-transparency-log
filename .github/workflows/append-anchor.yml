@@ -1,0 +1,50 @@
+name: Append deed corpus root anchor
+
+on:
+  workflow_dispatch:
+    inputs:
+      request_base64url:
+        description: Hash-only private registry root request
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: deed-corpus-transparency-log
+  cancel-in-progress: false
+
+jobs:
+  append:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Append one connected monotonic root
+        env:
+          REQUEST_BASE64URL: ${{ inputs.request_base64url }}
+        run: node scripts/append-anchor.mjs --file anchors.json --request-base64url "$REQUEST_BASE64URL"
+
+      - name: Commit append-only anchor
+        run: |
+          git config user.name "deed-corpus-transparency[bot]"
+          git config user.email "deed-corpus-transparency[bot]@users.noreply.github.com"
+          git add anchors.json
+          if git diff --cached --quiet; then exit 1; fi
+          git commit -m "anchor: append private deed registry root"
+          git push origin HEAD:main
+
+      - name: Attest exact public anchor log
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: anchors.json
