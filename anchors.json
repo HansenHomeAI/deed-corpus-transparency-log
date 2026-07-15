@@ -14,6 +14,18 @@
       "requestNonce": "074955276b410e707c4d1a3261853cc2d83f9cffa2ef8e97ffdd1adc24520be7",
       "issuedAt": "2026-07-15T21:37:54.748Z",
       "anchorEventSha256": "316544f43bc145c6345552245a197dac0b68bda4d79dfdb4455a0c17844bee98"
+    },
+    {
+      "schemaVersion": 1,
+      "sequence": 2,
+      "previousAnchorEventSha256": "316544f43bc145c6345552245a197dac0b68bda4d79dfdb4455a0c17844bee98",
+      "previousPrivateRegistryRootSha256": "4595760e04bcfca8fabf185929d662c4d6ac15d6bc4856b9676314b38507c45e",
+      "privateRegistryRootSha256": "0aa70f2f16bd63d38635a6690bbe6f94f15200e97b1a023a28e82cb1a8798cc4",
+      "privateRegistryEventCount": 2,
+      "kind": "legacy-quarantine",
+      "requestNonce": "80db840169ee678b8e1569e92fce0b9dc1f2ed903018e937733707f6fdc2945a",
+      "issuedAt": "2026-07-15T21:47:11.925Z",
+      "anchorEventSha256": "6c693766278590808425e200c7504ced03efdd17a98e446a6ee1cd82259eecf2"
     }
   ]
 }
