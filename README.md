@@ -297,6 +297,24 @@ corresponding non-secret bundle key id. The workflow generates registry receipt
 keys ephemerally per run and deletes all private plaintext and key material in
 an `always()` cleanup step.
 
+## Protected refusal-truth reviewer
+
+`.github/workflows/protected-refusal-reviewer.yml` is the separate fail-safe
+truth-review boundary. It accepts only an encrypted raw-source bundle, never
+checks out the product repository, renders and retains every PDF page, and
+requires approving semantic reviews from pinned OpenAI and Meta multimodal
+models after a workflow-generated challenge. The encrypted return contains
+each prompt, schema, all-page image manifest and image, raw model response,
+parsed assessment, model/call/session receipt, source-visible property identity
+evidence, review index, and OIDC Sigstore attestation.
+
+The encrypted registry accepts a fail-safe `truth-seal` only after a unique
+`review-seal` binds the exact assignment, source, selector, expected-code
+candidate, two distinct provider/model and returned-model identities, unique
+call and session ids, evidence and attestation roots, and the protected
+property-group hash. Reusing that protected property group for another case or
+title chain is rejected.
+
 ## Offline custodian recovery and verification
 
 The AES CLI reads its key only from `REGISTRY_AES_KEY_BASE64`; it does not accept

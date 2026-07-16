@@ -415,6 +415,27 @@ test("fail-safe execution seal requires and accepts the same hosted certificatio
   }
 });
 
+test("fail-safe truth requires a prior distinct two-system protected review and rejects property-group reuse", () => {
+  let registry = quarantineRegistry([{ caseId: "legacy-review", sourceSha256: hash("legacy-review-source") }]);
+  registry = appendCorpusRegistryEvent(registry, withIssued(assignmentBody(0, { split: "fail-safe" }), iso(1)));
+  const first = registry.events.at(-1);
+  const orphan = appendCorpusRegistryEvent(registry,
+    withIssued(truthBody(first, { reviewSealedAt: iso(2), reviewSealEventSha256: hash("missing"),
+      expectedFailureCandidateSha256: hash("candidate-0") }), iso(2)));
+  assert.equal(validateCorpusRegistry({ registry: orphan }).ok, false);
+  registry = appendCorpusRegistryEvent(registry, withIssued(reviewBody(first, 0, iso(2)), iso(2)));
+  const review = registry.events.at(-1);
+  registry = appendCorpusRegistryEvent(registry, withIssued(truthBody(first, { reviewSealedAt: review.issuedAt,
+    reviewSealEventSha256: review.eventSha256,
+    expectedFailureCandidateSha256: review.payload.expectedFailureCandidateSha256 }), iso(3)));
+  assert.equal(validateCorpusRegistry({ registry }).ok, true);
+  registry = appendCorpusRegistryEvent(registry, withIssued(assignmentBody(1, { split: "fail-safe" }), iso(4)));
+  const second = registry.events.at(-1);
+  const reused = reviewBody(second, 1, iso(5)); reused.payload.propertyGroupSha256 = review.payload.propertyGroupSha256;
+  registry = appendCorpusRegistryEvent(registry, withIssued(reused, iso(5)));
+  assert.equal(validateCorpusRegistry({ registry }).ok, false);
+});
+
 test("stale index, wrong keys, tampering, reorder, deletion, and caller chronology fail closed", () => {
   const fixture = createFixture();
   const stale = intentFor(fixture, assignmentBody(0));
@@ -677,6 +698,31 @@ function truthBody(assignment, overrides = {}) {
     productOutputAvailable: false, reviewSealedAt: new Date().toISOString(), ...overrides,
   } };
 }
+function reviewBody(assignment, index, sealedAt) {
+  const reviewIndexSha256 = hash(`review-index-${index}`);
+  return { eventType: "review-seal", caseId: assignment.caseId, corpusId: assignment.corpusId, payload: {
+    assignmentEventSha256: assignment.eventSha256, sourceSha256: assignment.payload.sourceSha256,
+    selectorSha256: assignment.payload.selectorSha256,
+    expectedFailureCandidateSha256: hash(`candidate-${index}`), reviewRequestSha256: hash(`review-request-${index}`),
+    reviewIndexSha256, reviewEvidenceRootSha256: hash(`review-evidence-${index}`),
+    reviewAttestationSubjectSha256: reviewIndexSha256,
+    reviewAttestationBundleRootSha256: hash(`review-attestation-${index}`), verifierPolicyTip: "f".repeat(40),
+    reviewerWorkflowRef: "HansenHomeAI/deed-corpus-transparency-log/.github/workflows/protected-refusal-reviewer.yml@refs/heads/main",
+    reviewerWorkflowRunId: String(9000 + index), reviewerWorkflowRunAttempt: "1",
+    protectedChallengeSha256: hash(`challenge-${index}`), semanticSystems: [
+      { provider: "OpenAI", requestedModel: "openai/gpt-4.1", catalogVersion: "2025-04-14",
+        returnedModel: "gpt-4.1-2025-04-14", callId: `call-openai-${index}`,
+        sessionIdSha256: hash(`session-openai-${index}`), receiptSha256: hash(`receipt-openai-${index}`),
+        assessmentSha256: hash(`assessment-openai-${index}`) },
+      { provider: "Meta", requestedModel: "meta/llama-4-maverick-17b-128e-instruct-fp8", catalogVersion: "1",
+        returnedModel: "llama-4-maverick-17b-128e-instruct-fp8", callId: `call-meta-${index}`,
+        sessionIdSha256: hash(`session-meta-${index}`), receiptSha256: hash(`receipt-meta-${index}`),
+        assessmentSha256: hash(`assessment-meta-${index}`) },
+    ], propertyIdentityEvidenceSha256: hash(`property-evidence-${index}`),
+    propertyGroupSha256: hash(`protected-property-group-${index}`), productCodeMounted: false,
+    productOutputAvailable: false, geometryArtifactsExpected: 0, status: "approved", critical: 0, major: 0, sealedAt,
+  } };
+}
 function sourceReleaseBody(assignment, overrides = {}) {
   return { eventType: "source-release", caseId: assignment.caseId, corpusId: assignment.corpusId,
     payload: { productCodeTip: "a".repeat(40), ...overrides } };
@@ -744,11 +790,16 @@ function failSafeConsumedRegistry() {
   const assignments = [];
   for (let index = 0; index < 20; index += 1) {
     registry = appendCorpusRegistryEvent(registry,
-      withIssued(assignmentBody(index, { split: "fail-safe" }), iso(index * 2 + 1)));
+      withIssued(assignmentBody(index, { split: "fail-safe" }), iso(index * 3 + 1)));
     const assignment = registry.events.at(-1);
     assignments.push(assignment);
     registry = appendCorpusRegistryEvent(registry,
-      withIssued(truthBody(assignment, { reviewSealedAt: iso(index * 2 + 2) }), iso(index * 2 + 2)));
+      withIssued(reviewBody(assignment, index, iso(index * 3 + 2)), iso(index * 3 + 2)));
+    const review = registry.events.at(-1);
+    registry = appendCorpusRegistryEvent(registry,
+      withIssued(truthBody(assignment, { reviewSealedAt: review.issuedAt,
+        reviewSealEventSha256: review.eventSha256,
+        expectedFailureCandidateSha256: review.payload.expectedFailureCandidateSha256 }), iso(index * 3 + 3)));
   }
   const consumedAt = iso(101);
   registry = appendCorpusRegistryEvent(registry, {

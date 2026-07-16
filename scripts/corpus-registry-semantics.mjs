@@ -8,7 +8,7 @@ const ZERO = "0".repeat(64);
 const SPLITS = new Set(["tuning", "final", "fail-safe", "legacy-quarantine"]);
 const EXECUTABLE_SPLITS = new Set(["tuning", "final", "fail-safe"]);
 export const CORPUS_EVENT_TYPES = new Set([
-  "assign", "truth-seal", "source-release", "consume", "execution-seal",
+  "assign", "review-seal", "truth-seal", "source-release", "consume", "execution-seal",
   "judge-challenge", "judge-seal", "legacy-quarantine",
 ]);
 const IDENTITY_FIELDS = ["sourceSha256", "selectorSha256", "propertyIdentitySha256", "titleChainGroupSha256"];
@@ -55,6 +55,7 @@ export function validateCorpusRegistry({ registry, previousRegistry = null } = {
   }
   if (previousRegistry) validateAppendOnly(previousRegistry, registry, errors);
   const assignments = new Map();
+  const reviewSeals = new Map();
   const truths = new Map();
   const sourceReleases = new Map();
   const consumedCorpora = new Set();
@@ -67,6 +68,7 @@ export function validateCorpusRegistry({ registry, previousRegistry = null } = {
   const truthIdentities = new Map(TRUTH_IDENTITY_FIELDS.map((field) => [field, new Map()]));
   const instrumentGroups = new Map();
   const familyGroups = new Map();
+  const protectedPropertyGroups = new Map();
   let priorHash = ZERO;
   let priorTime = -Infinity;
   for (let index = 0; index < registry.events.length; index += 1) {
@@ -85,8 +87,10 @@ export function validateCorpusRegistry({ registry, previousRegistry = null } = {
         errors.push(failure("REGISTRY_QUARANTINE_MISSING", `${at} assigns a new case before the legacy touched-source quarantine was sealed`));
       }
       validateAssignment(event, at, { errors, assignments, identities, instrumentGroups, familyGroups });
+    } else if (event.eventType === "review-seal") {
+      validateReviewSeal(event, at, { errors, assignments, reviewSeals, protectedPropertyGroups });
     } else if (event.eventType === "truth-seal") {
-      validateTruthSeal(event, at, { errors, assignments, truths, truthIdentities });
+      validateTruthSeal(event, at, { errors, assignments, reviewSeals, truths, truthIdentities });
     } else if (event.eventType === "source-release") {
       validateSourceRelease(event, at, { errors, assignments, sourceReleases });
     } else if (event.eventType === "consume") {
@@ -106,6 +110,7 @@ export function validateCorpusRegistry({ registry, previousRegistry = null } = {
     rootSha256: corpusRegistryRootSha256(registry),
     eventCount: registry.events.length,
     assignments: assignments.size,
+    reviewSeals: reviewSeals.size,
     truthSeals: truths.size,
     sourceReleases: sourceReleases.size,
     consumes: executionKeys.size,
@@ -113,6 +118,58 @@ export function validateCorpusRegistry({ registry, previousRegistry = null } = {
     judgeChallenges: judgeChallenges.size,
     judgeSeals: judgeSeals.size,
   };
+}
+
+function validateReviewSeal(event, at, context) {
+  const { errors, assignments, reviewSeals, protectedPropertyGroups } = context;
+  const assignment = assignments.get(event.caseId);
+  const payload = event.payload || {};
+  const systems = payload.semanticSystems;
+  const systemFields = new Set([
+    "provider", "requestedModel", "catalogVersion", "returnedModel", "callId", "sessionIdSha256",
+    "receiptSha256", "assessmentSha256",
+  ]);
+  const systemsValid = Array.isArray(systems) && systems.length === 2
+    && systems.every((system) => system && typeof system === "object" && !Array.isArray(system)
+      && Object.keys(system).length === systemFields.size && Object.keys(system).every((field) => systemFields.has(field))
+      && typeof system.provider === "string" && system.provider.length > 0
+      && typeof system.requestedModel === "string" && system.requestedModel.length > 0
+      && typeof system.catalogVersion === "string" && system.catalogVersion.length > 0
+      && typeof system.returnedModel === "string" && system.returnedModel.length > 0
+      && typeof system.callId === "string" && system.callId.length > 0
+      && ["sessionIdSha256", "receiptSha256", "assessmentSha256"].every((field) => SHA256.test(system[field] || "")))
+    && new Set(systems.map((system) => system.provider)).size === 2
+    && new Set(systems.map((system) => system.requestedModel)).size === 2
+    && new Set(systems.map((system) => system.returnedModel)).size === 2
+    && new Set(systems.map((system) => system.callId)).size === 2
+    && new Set(systems.map((system) => system.sessionIdSha256)).size === 2;
+  const reusedProperty = protectedPropertyGroups.get(payload.propertyGroupSha256);
+  if (!assignment || reviewSeals.has(event.caseId) || event.corpusId !== assignment.corpusId
+    || assignment.payload?.split !== "fail-safe" || payload.assignmentEventSha256 !== assignment.eventSha256
+    || payload.sourceSha256 !== assignment.payload?.sourceSha256
+    || payload.selectorSha256 !== assignment.payload?.selectorSha256
+    || !SHA256.test(payload.expectedFailureCandidateSha256 || "")
+    || !SHA256.test(payload.reviewRequestSha256 || "") || !SHA256.test(payload.reviewIndexSha256 || "")
+    || !SHA256.test(payload.reviewEvidenceRootSha256 || "")
+    || payload.reviewAttestationSubjectSha256 !== payload.reviewIndexSha256
+    || !SHA256.test(payload.reviewAttestationBundleRootSha256 || "")
+    || !/^[a-f0-9]{40}$/.test(payload.verifierPolicyTip || "")
+    || payload.reviewerWorkflowRef
+      !== "HansenHomeAI/deed-corpus-transparency-log/.github/workflows/protected-refusal-reviewer.yml@refs/heads/main"
+    || !/^[1-9][0-9]*$/.test(payload.reviewerWorkflowRunId || "")
+    || !/^[1-9][0-9]*$/.test(payload.reviewerWorkflowRunAttempt || "")
+    || !SHA256.test(payload.protectedChallengeSha256 || "") || !systemsValid
+    || !SHA256.test(payload.propertyIdentityEvidenceSha256 || "") || !SHA256.test(payload.propertyGroupSha256 || "")
+    || (reusedProperty && reusedProperty.caseId !== event.caseId)
+    || payload.productCodeMounted !== false || payload.productOutputAvailable !== false
+    || payload.geometryArtifactsExpected !== 0 || payload.status !== "approved"
+    || payload.critical !== 0 || payload.major !== 0 || payload.sealedAt !== event.issuedAt
+    || event.sequence <= assignment.sequence) {
+    errors.push(failure("REGISTRY_REVIEW_SEAL_INVALID", `${at} is not a unique attested two-system refusal review over exact source and selector bindings`));
+    return;
+  }
+  reviewSeals.set(event.caseId, event);
+  protectedPropertyGroups.set(payload.propertyGroupSha256, event);
 }
 
 function validateAppendOnly(previous, current, errors) {
@@ -181,8 +238,9 @@ function validateSourceRelease(event, at, context) {
 }
 
 function validateTruthSeal(event, at, context) {
-  const { errors, assignments, truths, truthIdentities } = context;
+  const { errors, assignments, reviewSeals, truths, truthIdentities } = context;
   const assignment = assignments.get(event.caseId);
+  const reviewSeal = reviewSeals.get(event.caseId);
   const payload = event.payload || {};
   if (!assignment || truths.has(event.caseId) || event.corpusId !== assignment.corpusId
     || payload.assignmentEventSha256 !== assignment.eventSha256 || !SHA256.test(payload.truthSha256 || "")
@@ -190,7 +248,11 @@ function validateTruthSeal(event, at, context) {
     || !SHA256.test(payload.truthReceiptRootSha256 || "") || !SHA256.test(payload.measurementReceiptSha256 || "")
     || payload.productOutputAvailable !== false || !validIso(payload.reviewSealedAt)
     || Date.parse(payload.reviewSealedAt) < Date.parse(assignment.issuedAt)
-    || Date.parse(event.issuedAt) < Date.parse(payload.reviewSealedAt)) {
+    || Date.parse(event.issuedAt) < Date.parse(payload.reviewSealedAt)
+    || (assignment?.payload?.split === "fail-safe" && (!reviewSeal
+      || payload.reviewSealEventSha256 !== reviewSeal.eventSha256
+      || payload.expectedFailureCandidateSha256 !== reviewSeal.payload?.expectedFailureCandidateSha256
+      || payload.reviewSealedAt !== reviewSeal.issuedAt || reviewSeal.sequence >= event.sequence))) {
     errors.push(failure("REGISTRY_TRUTH_SEAL_INVALID", `${at} is not a unique pre-product truth seal for its assignment`));
     return;
   }

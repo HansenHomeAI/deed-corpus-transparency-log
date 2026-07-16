@@ -337,7 +337,7 @@ export function appendPlaintextEvent(state, intent, authority, now = new Date(),
   } else if (event.eventType === "consume") {
     event.payload.oneUseNonce = nonce;
     event.payload.consumedAt = event.issuedAt;
-  } else if (event.eventType === "execution-seal" || event.eventType === "judge-seal") {
+  } else if (["review-seal", "execution-seal", "judge-seal"].includes(event.eventType)) {
     event.payload.sealedAt = event.issuedAt;
   } else if (event.eventType === "judge-challenge") {
     event.payload.challengeNonce = nonce;
@@ -430,7 +430,7 @@ export function decryptProtectedAppendReceipt(bytes, privateKeyPem, expectedKeyI
 
 function workflowOwnedReceiptFields(event) {
   if (event.eventType === "consume") return { oneUseNonce: event.payload.oneUseNonce, consumedAt: event.payload.consumedAt };
-  if (event.eventType === "execution-seal" || event.eventType === "judge-seal") return { sealedAt: event.payload.sealedAt };
+  if (["review-seal", "execution-seal", "judge-seal"].includes(event.eventType)) return { sealedAt: event.payload.sealedAt };
   if (event.eventType === "judge-challenge") return { challengeNonce: event.payload.challengeNonce, challengedAt: event.payload.challengedAt };
   if (event.eventType === "source-release") return { frozenAt: event.payload.frozenAt, releasedAt: event.payload.releasedAt };
   return {};
@@ -450,7 +450,7 @@ function validateProtectedReceipt(receipt, { expectedRequestSha256, expectedCiph
   const workflowOwnedFields = receipt?.eventType === "consume" ? new Set(["oneUseNonce", "consumedAt"])
     : receipt?.eventType === "judge-challenge" ? new Set(["challengeNonce", "challengedAt"])
       : receipt?.eventType === "source-release" ? new Set(["frozenAt", "releasedAt"])
-        : (receipt?.eventType === "execution-seal" || receipt?.eventType === "judge-seal")
+        : (["review-seal", "execution-seal", "judge-seal"].includes(receipt?.eventType))
           ? new Set(["sealedAt"]) : new Set();
   const executionFields = new Set([
     "executionRootSha256", "executionIndexSha256", "executionCount", "productCodeTip", "verifierPolicyTip",
@@ -497,7 +497,7 @@ function validateProtectedReceipt(receipt, { expectedRequestSha256, expectedCiph
     && (!SHA256.test(receipt.workflowOwned?.oneUseNonce || "") || receipt.workflowOwned?.consumedAt !== receipt.issuedAt)) {
     throw new Error("Protected consume receipt lacks its workflow nonce or timestamp.");
   }
-  if ((receipt.eventType === "execution-seal" || receipt.eventType === "judge-seal")
+  if (["review-seal", "execution-seal", "judge-seal"].includes(receipt.eventType)
     && receipt.workflowOwned?.sealedAt !== receipt.issuedAt) {
     throw new Error("Protected seal receipt lacks its workflow timestamp.");
   }

@@ -1,0 +1,174 @@
+name: Protected refusal-truth reviewer
+run-name: refusal-review-${{ inputs.request_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      request_id: { description: Random 32-byte request id encoded as lowercase hex, required: true, type: string }
+      verifier_policy_tip: { description: Exact protected public main commit, required: true, type: string }
+      input_release_id: { description: Scoped draft release containing only encrypted input, required: true, type: string }
+      source_asset_id: { description: Exact source.bundle asset id, required: true, type: string }
+      source_bundle_sha256: { description: SHA-256 of source.bundle ciphertext, required: true, type: string }
+      review_request_sha256: { description: SHA-256 of plaintext review-request.json inside ciphertext, required: true, type: string }
+      requester_public_key_pem_base64: { description: Base64 requester PEM used only for encrypted return, required: true, type: string }
+      requester_public_key_sha256: { description: SHA-256 of decoded requester PEM, required: true, type: string }
+
+permissions:
+  actions: write
+  artifact-metadata: write
+  attestations: write
+  contents: read
+  id-token: write
+  models: read
+
+concurrency:
+  group: deed-refusal-review-${{ inputs.request_id }}
+  cancel-in-progress: false
+
+jobs:
+  review:
+    environment: deed-corpus-evaluator
+    runs-on: macos-15
+    timeout-minutes: 360
+    env:
+      SPACEPORT_RUNNER_ENVIRONMENT: github-hosted
+      SPACEPORT_REFUSAL_REVIEW_WORKFLOW_REF: HansenHomeAI/deed-corpus-transparency-log/.github/workflows/protected-refusal-reviewer.yml@refs/heads/main
+    steps:
+      - name: Checkout exact protected reviewer policy
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Pin protected main and validate opaque dispatch
+        env:
+          REQUEST_ID: ${{ inputs.request_id }}
+          VERIFIER_POLICY_TIP: ${{ inputs.verifier_policy_tip }}
+          INPUT_RELEASE_ID: ${{ inputs.input_release_id }}
+          SOURCE_ASSET_ID: ${{ inputs.source_asset_id }}
+          SOURCE_BUNDLE_SHA256: ${{ inputs.source_bundle_sha256 }}
+          REVIEW_REQUEST_SHA256: ${{ inputs.review_request_sha256 }}
+          REQUESTER_PUBLIC_KEY_PEM_BASE64: ${{ inputs.requester_public_key_pem_base64 }}
+          REQUESTER_PUBLIC_KEY_SHA256: ${{ inputs.requester_public_key_sha256 }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/main
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$VERIFIER_POLICY_TIP" = "$GITHUB_SHA"
+          git fetch --quiet origin refs/heads/main
+          test "$(git rev-parse FETCH_HEAD)" = "$GITHUB_SHA"
+          umask 077
+          root="$RUNNER_TEMP/deed-refusal-review"
+          mkdir -p "$root"
+          node scripts/protected-refusal-reviewer.mjs write-request --out "$root/request.json"
+
+      - name: Verify scoped draft release and download ciphertext only
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/deed-refusal-review"
+          gh api "repos/HansenHomeAI/deed-corpus-transparency-log/releases/${{ inputs.input_release_id }}" > "$root/input-release.json"
+          node scripts/protected-refusal-reviewer.mjs verify-input-release \
+            --request "$root/request.json" --release "$root/input-release.json"
+          gh api -H "Accept: application/octet-stream" \
+            "repos/HansenHomeAI/deed-corpus-transparency-log/releases/assets/${{ inputs.source_asset_id }}" > "$root/source.bundle"
+          test "$(shasum -a 256 "$root/source.bundle" | awk '{print $1}')" = "${{ inputs.source_bundle_sha256 }}"
+
+      - name: Decrypt encrypted raw deed sources without any product checkout
+        env:
+          BUNDLE_PRIVATE_KEY_PEM: ${{ secrets.DEED_EVALUATOR_BUNDLE_PRIVATE_KEY_PEM }}
+          BUNDLE_KEY_ID: ${{ vars.DEED_EVALUATOR_BUNDLE_KEY_ID }}
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/deed-refusal-review"
+          umask 077
+          printf '%s' "$BUNDLE_PRIVATE_KEY_PEM" > "$root/bundle-private.pem"
+          node scripts/deed-bundle.mjs unpack --bundle "$root/source.bundle" \
+            --private-key "$root/bundle-private.pem" --key-id "$BUNDLE_KEY_ID" \
+            --role source --request-id "${{ inputs.request_id }}" --out "$root/private"
+          node scripts/protected-refusal-reviewer.mjs verify-source \
+            --request "$root/request.json" --root "$root/private"
+          rm -f "$root/source.bundle" "$root/bundle-private.pem"
+          test ! -d private-product
+
+      - name: Install all-page rendering dependency
+        run: |
+          set -euo pipefail
+          brew list poppler >/dev/null 2>&1 || brew install poppler
+          pdfinfo -v 2>&1 | head -1
+
+      - name: Create protected challenge and run two distinct multimodal reviewers
+        env:
+          MODEL_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/deed-refusal-review"
+          umask 077
+          openssl rand 32 > "$root/workflow-challenge"
+          printf '%s' "$MODEL_TOKEN" > "$root/model-token"
+          unset MODEL_TOKEN GITHUB_TOKEN ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL
+          node scripts/protected-refusal-reviewer.mjs review \
+            --request "$root/request.json" --root "$root/private" --out "$root/evidence" \
+            --challenge-file "$root/workflow-challenge" --token-file "$root/model-token"
+          test ! -e "$root/workflow-challenge"
+          test ! -e "$root/model-token"
+
+      - name: Revalidate exact all-page review index
+        id: review_index
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/deed-refusal-review"
+          index="$root/evidence/review-index.json"
+          node scripts/protected-refusal-reviewer.mjs validate-index \
+            --request "$root/request.json" --index "$index" > "$root/evidence/index-validation.json"
+          echo "index=$index" >> "$GITHUB_OUTPUT"
+
+      - name: Create OIDC Sigstore attestation for exact review index
+        id: attest_review
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-path: ${{ steps.review_index.outputs.index }}
+          show-summary: false
+
+      - name: Independently verify and retain attestation
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/deed-refusal-review"
+          index="${{ steps.review_index.outputs.index }}"
+          bundle="${{ steps.attest_review.outputs.bundle-path }}"
+          test -s "$bundle"
+          gh attestation verify "$index" \
+            --repo HansenHomeAI/deed-corpus-transparency-log \
+            --signer-workflow HansenHomeAI/deed-corpus-transparency-log/.github/workflows/protected-refusal-reviewer.yml \
+            --signer-digest "$GITHUB_SHA" --source-ref refs/heads/main \
+            --cert-oidc-issuer https://token.actions.githubusercontent.com \
+            --deny-self-hosted-runners --bundle "$bundle" --format json \
+            > "$root/evidence/attestation-verification.json"
+          cp "$bundle" "$root/evidence/review-index.sigstore.json"
+
+      - name: Encrypt complete receipts, transcripts, images, index, and attestation to requester
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/deed-refusal-review"
+          node scripts/protected-refusal-reviewer.mjs encrypt-evidence \
+            --request "$root/request.json" --root "$root/evidence" --out "$root/evidence.bundle" \
+            > "$root/encrypted-evidence-receipt.json"
+
+      - name: Upload ciphertext evidence only
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: deed-refusal-review-${{ inputs.request_id }}-encrypted-evidence
+          path: ${{ runner.temp }}/deed-refusal-review/evidence.bundle
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+      - name: Remove all decrypted sources, images, prompts, tokens, challenge, and keys
+        if: always()
+        run: |
+          set +e
+          rm -rf "$RUNNER_TEMP/deed-refusal-review"
