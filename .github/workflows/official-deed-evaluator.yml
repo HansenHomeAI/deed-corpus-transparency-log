@@ -239,10 +239,13 @@ jobs:
             images+=(--image "$png")
           done
           node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({type:"object",additionalProperties:false,required:["ok"],properties:{ok:{type:"boolean",const:true}}}))' "$smoke/schema.json"
-          printf '%s\n' 'Synthetic eighty-image maximum-cardinality multimodal smoke. Return {"ok":true}.' | \
-            codex exec --ephemeral --ignore-rules --sandbox read-only --skip-git-repo-check \
-              --output-schema "$smoke/schema.json" --output-last-message "$smoke/result.json" \
-              "${images[@]}"
+          (
+            cd "$smoke"
+            printf '%s\n' 'Synthetic eighty-image maximum-cardinality multimodal smoke. Return {"ok":true}.' | \
+              codex exec --ephemeral --ignore-rules --sandbox read-only --skip-git-repo-check \
+                --output-schema "$smoke/schema.json" --output-last-message "$smoke/result.json" \
+                "${images[@]}"
+          )
           node -e 'const v=require(process.argv[1]); if(v.ok!==true)process.exit(1)' "$smoke/result.json"
           test -s "$smoke/result.json.model-receipt.json"
           node private-product/scripts/deed-corpus-run.mjs \

@@ -82,10 +82,13 @@ jobs:
             images+=(--image "$png")
           done
           node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({type:"object",additionalProperties:false,required:["ok"],properties:{ok:{type:"boolean",const:true}}}))' "$evidence/schema.json"
-          PATH="$bin:$PATH" printf '%s\n' 'Synthetic eighty-image maximum-cardinality multimodal smoke. Return {"ok":true}.' | \
-            PATH="$bin:$PATH" codex exec --ephemeral --ignore-rules --sandbox read-only --skip-git-repo-check \
-              --output-schema "$evidence/schema.json" --output-last-message "$evidence/result.json" \
-              "${images[@]}"
+          (
+            cd "$evidence"
+            PATH="$bin:$PATH" printf '%s\n' 'Synthetic eighty-image maximum-cardinality multimodal smoke. Return {"ok":true}.' | \
+              PATH="$bin:$PATH" codex exec --ephemeral --ignore-rules --sandbox read-only --skip-git-repo-check \
+                --output-schema "$evidence/schema.json" --output-last-message "$evidence/result.json" \
+                "${images[@]}"
+          )
           node scripts/validate-hosted-model-smoke.mjs --root "$evidence" --out "$root/smoke-index.json"
           kill "$broker_pid"
           wait "$broker_pid" || true
