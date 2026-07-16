@@ -3,7 +3,9 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import {
   appendPlaintextEvent,
+  buildProtectedAppendRejectionReceipt,
   buildProtectedAppendReceipt,
+  CorpusRegistrySemanticError,
   ciphertextPath,
   decodeAesKey,
   decryptRequest,
@@ -56,7 +58,53 @@ const authority = {
   workflowTip,
 };
 const derivedReviewEvent = derivedReviewEventPath ? JSON.parse(readFileSync(derivedReviewEventPath, "utf8")) : null;
-const event = appendPlaintextEvent(state, intent, authority, new Date(), undefined, { derivedReviewEvent });
+let event;
+try {
+  event = appendPlaintextEvent(state, intent, authority, new Date(), undefined, { derivedReviewEvent });
+} catch (error) {
+  if (!(error instanceof CorpusRegistrySemanticError)) throw error;
+  const currentEnvelope = index.envelopes.at(-1);
+  const protectedReceipt = buildProtectedAppendRejectionReceipt({
+    intent,
+    state,
+    authority,
+    errors: error.errors,
+    rejectedAt: new Date().toISOString(),
+    publicCommitment: {
+      sequence: currentEnvelope.sequence,
+      publicIndexSha256: beforeIndexSha256,
+      envelopeSha256: currentEnvelope.envelopeSha256,
+      ciphertextSha256: currentEnvelope.ciphertextSha256,
+    },
+  });
+  const artifactName = `deed-registry-receipt-${protectedReceipt.requestSha256}`;
+  const metadata = {
+    schemaVersion: 1,
+    outcome: "rejected",
+    artifactName,
+    requestSha256: protectedReceipt.requestSha256,
+    encryptedReceiptSha256: protectedReceipt.encryptedReceiptSha256,
+    publicIndexSha256: beforeIndexSha256,
+    ciphertextSha256: currentEnvelope.ciphertextSha256,
+    workflowRunId,
+    workflowRunAttempt,
+  };
+  mkdirSync(receiptDirectory, { recursive: true, mode: 0o700 });
+  writeFileSync(`${receiptDirectory}/receipt.encrypted.json`, protectedReceipt.bytes, { flag: "wx", mode: 0o600 });
+  writeFileSync(`${receiptDirectory}/receipt-metadata.json`, `${JSON.stringify(metadata, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+  process.stdout.write(`${JSON.stringify({
+    ok: false,
+    appended: false,
+    sequence: currentEnvelope.sequence,
+    indexSha256: beforeIndexSha256,
+    ciphertextSha256: currentEnvelope.ciphertextSha256,
+    envelopeSha256: currentEnvelope.envelopeSha256,
+    requestSha256: protectedReceipt.requestSha256,
+    encryptedReceiptSha256: protectedReceipt.encryptedReceiptSha256,
+    artifactName,
+  }, null, 2)}\n`);
+  process.exit(0);
+}
 const ciphertext = encryptState(state, key);
 const sequence = index.envelopes.length + 1;
 const issuedAt = event.issuedAt;
@@ -88,6 +136,7 @@ const protectedReceipt = buildProtectedAppendReceipt({
 const artifactName = `deed-registry-receipt-${protectedReceipt.requestSha256}`;
 const metadata = {
   schemaVersion: 1,
+  outcome: "appended",
   artifactName,
   requestSha256: protectedReceipt.requestSha256,
   encryptedReceiptSha256: protectedReceipt.encryptedReceiptSha256,
@@ -108,6 +157,7 @@ validatePublicIndex(index, { ciphertextDirectory });
 
 process.stdout.write(`${JSON.stringify({
   ok: true,
+  appended: true,
   sequence,
   indexSha256: indexSha256(index),
   ciphertextPath: outputPath,

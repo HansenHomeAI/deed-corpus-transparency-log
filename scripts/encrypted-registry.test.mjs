@@ -119,9 +119,8 @@ test("duplicate source, property, and title identities fail inside encrypted sem
     const state = latestState(fixture);
     const first = state.registry.events.at(-1);
     const duplicate = assignmentBody(1, { [field]: first.payload[field] });
-    const result = append(fixture, intentFor(fixture, duplicate), "2");
-    assert.notEqual(result.status, 0, field);
-    assert.match(result.stderr, /detailed corpus state machine/, field);
+    const intent = intentFor(fixture, duplicate);
+    assertEncryptedRejection(append(fixture, intent, "2"), intent, fixture, "REGISTRY_CROSS_CORPUS_REUSE");
   }
 });
 
@@ -132,10 +131,9 @@ test("instrument and source-family caps fail closed", () => {
     assert.equal(append(instrumentFixture, intentFor(instrumentFixture,
       assignmentBody(index, { instrumentIdHash: sharedInstrument })), String(index + 1)).status, 0);
   }
-  const third = append(instrumentFixture, intentFor(instrumentFixture,
-    assignmentBody(2, { instrumentIdHash: sharedInstrument })), "3");
-  assert.notEqual(third.status, 0);
-  assert.match(third.stderr, /detailed corpus state machine/);
+  const thirdIntent = intentFor(instrumentFixture, assignmentBody(2, { instrumentIdHash: sharedInstrument }));
+  assertEncryptedRejection(append(instrumentFixture, thirdIntent, "3"), thirdIntent, instrumentFixture,
+    "REGISTRY_INSTRUMENT_REUSE");
 
   const familyFixture = createFixture();
   const sharedFamily = `family-${hash("shared-family").slice(0, 12)}`;
@@ -143,27 +141,25 @@ test("instrument and source-family caps fail closed", () => {
     assert.equal(append(familyFixture, intentFor(familyFixture,
       assignmentBody(index, { sourceFamilyId: sharedFamily })), String(index + 1)).status, 0);
   }
-  const sixth = append(familyFixture, intentFor(familyFixture,
-    assignmentBody(5, { sourceFamilyId: sharedFamily })), "6");
-  assert.notEqual(sixth.status, 0);
-  assert.match(sixth.stderr, /detailed corpus state machine/);
+  const sixthIntent = intentFor(familyFixture, assignmentBody(5, { sourceFamilyId: sharedFamily }));
+  assertEncryptedRejection(append(familyFixture, sixthIntent, "6"), sixthIntent, familyFixture,
+    "REGISTRY_FAMILY_REUSE");
 });
 
 test("truth and incomplete consume chronology attacks are rejected", () => {
   const truthFixture = createFixture();
   const orphanTruth = truthBody({ caseId: caseId(0), corpusId: CORPUS_ID, eventSha256: hash("missing") });
-  const truth = append(truthFixture, intentFor(truthFixture, orphanTruth));
-  assert.notEqual(truth.status, 0);
-  assert.match(truth.stderr, /detailed corpus state machine/);
+  const truthIntent = intentFor(truthFixture, orphanTruth);
+  assertEncryptedRejection(append(truthFixture, truthIntent), truthIntent, truthFixture, "REGISTRY_TRUTH_SEAL_INVALID");
 
   const consumeFixture = createFixture();
   assert.equal(append(consumeFixture, intentFor(consumeFixture, assignmentBody(0))).status, 0);
   const assigned = latestState(consumeFixture).registry.events.at(-1);
   const reviewAt = new Date(Date.parse(assigned.issuedAt) + 1).toISOString();
   assert.equal(append(consumeFixture, intentFor(consumeFixture, truthBody(assigned, { reviewSealedAt: reviewAt }))).status, 0);
-  const consume = append(consumeFixture, intentFor(consumeFixture, consumeBody([assigned.eventSha256])), "3");
-  assert.notEqual(consume.status, 0);
-  assert.match(consume.stderr, /detailed corpus state machine/);
+  const consumeIntent = intentFor(consumeFixture, consumeBody([assigned.eventSha256]));
+  assertEncryptedRejection(append(consumeFixture, consumeIntent, "3"), consumeIntent, consumeFixture,
+    "REGISTRY_CONSUME_INVALID");
 });
 
 test("source-release callers cannot assert any state-derived custody field and valid release derives all of them", () => {
@@ -220,26 +216,27 @@ test("the first protected source release freezes a corpus and every later case i
   assert.equal(secondRelease.payload.frozenAt, firstRelease.payload.frozenAt);
   assert.equal(secondRelease.payload.releasedAt, secondRelease.issuedAt);
 
-  const differentProduct = append(fixture, intentFor(fixture,
-    sourceReleaseBody(thirdAssignment, { productCodeTip: "b".repeat(40) })), "3106");
-  assert.notEqual(differentProduct.status, 0);
+  const differentProductIntent = intentFor(fixture,
+    sourceReleaseBody(thirdAssignment, { productCodeTip: "b".repeat(40) }));
+  assertEncryptedRejection(append(fixture, differentProductIntent, "3106"), differentProductIntent, fixture,
+    "REGISTRY_SOURCE_RELEASE_INVALID");
 });
 
 test("execution and judge events cannot precede their consumed, sealed, and challenged evidence", () => {
   const executionFixture = createFixture();
-  const execution = append(executionFixture, intentFor(executionFixture, executionBody(hash("missing-consume"))));
-  assert.notEqual(execution.status, 0);
-  assert.match(execution.stderr, /detailed corpus state machine/);
+  const executionIntent = intentFor(executionFixture, executionBody(hash("missing-consume")));
+  assertEncryptedRejection(append(executionFixture, executionIntent), executionIntent, executionFixture,
+    "REGISTRY_EXECUTION_SEAL_INVALID");
 
   const challengeFixture = createFixture();
-  const challenge = append(challengeFixture, intentFor(challengeFixture, challengeBody(hash("missing-execution"))));
-  assert.notEqual(challenge.status, 0);
-  assert.match(challenge.stderr, /detailed corpus state machine/);
+  const challengeIntent = intentFor(challengeFixture, challengeBody(hash("missing-execution")));
+  assertEncryptedRejection(append(challengeFixture, challengeIntent), challengeIntent, challengeFixture,
+    "REGISTRY_JUDGE_CHALLENGE_INVALID");
 
   const sealFixture = createFixture();
-  const seal = append(sealFixture, intentFor(sealFixture, judgeSealBody(hash("missing-challenge"))));
-  assert.notEqual(seal.status, 0);
-  assert.match(seal.stderr, /detailed corpus state machine/);
+  const sealIntent = intentFor(sealFixture, judgeSealBody(hash("missing-challenge")));
+  assertEncryptedRejection(append(sealFixture, sealIntent), sealIntent, sealFixture,
+    "REGISTRY_JUDGE_SEAL_INVALID");
 });
 
 test("valid tuning consume, execution, judge challenge, and judge seal stay in strict encrypted order", () => {
@@ -692,6 +689,22 @@ function decryptReceipt(result, intent, expectedCiphertextSha256, privateKey = r
   if (expectedSignerDigest !== null) expectations.expectedSignerDigest = expectedSignerDigest;
   return decryptProtectedAppendReceipt(readFileSync(join(result.receiptDirectory, "receipt.encrypted.json")),
     privateKey, RESPONSE_KEY_ID, expectations);
+}
+
+function assertEncryptedRejection(result, intent, fixture, expectedCode) {
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stderr, "");
+  const output = JSON.parse(result.stdout);
+  assert.equal(output.ok, false);
+  assert.equal(output.appended, false);
+  const index = readIndex(fixture);
+  assert.equal(output.sequence, index.envelopes.length);
+  assert.equal(output.indexSha256, indexSha256(index));
+  const receipt = decryptReceipt(result, intent, index.envelopes.at(-1).ciphertextSha256);
+  assert.equal(receipt.kind, "spaceport-deed-corpus-protected-append-rejection-receipt");
+  assert.equal(receipt.registryEventCount, latestState(fixture).registry.events.length);
+  assert.ok(receipt.errors.some((error) => error.code === expectedCode), JSON.stringify(receipt.errors));
+  return receipt;
 }
 
 function emptyRegistry() {
