@@ -68,7 +68,7 @@ export function validateCorpusRegistry({ registry, previousRegistry = null } = {
   const truthIdentities = new Map(TRUTH_IDENTITY_FIELDS.map((field) => [field, new Map()]));
   const instrumentGroups = new Map();
   const familyGroups = new Map();
-  const protectedPropertyGroups = new Map();
+  const protectedPropertyAliases = new Map();
   let priorHash = ZERO;
   let priorTime = -Infinity;
   for (let index = 0; index < registry.events.length; index += 1) {
@@ -88,7 +88,7 @@ export function validateCorpusRegistry({ registry, previousRegistry = null } = {
       }
       validateAssignment(event, at, { errors, assignments, identities, instrumentGroups, familyGroups });
     } else if (event.eventType === "review-seal") {
-      validateReviewSeal(event, at, { errors, assignments, reviewSeals, protectedPropertyGroups });
+      validateReviewSeal(event, at, { errors, assignments, reviewSeals, protectedPropertyAliases });
     } else if (event.eventType === "truth-seal") {
       validateTruthSeal(event, at, { errors, assignments, reviewSeals, truths, truthIdentities });
     } else if (event.eventType === "source-release") {
@@ -121,7 +121,7 @@ export function validateCorpusRegistry({ registry, previousRegistry = null } = {
 }
 
 function validateReviewSeal(event, at, context) {
-  const { errors, assignments, reviewSeals, protectedPropertyGroups } = context;
+  const { errors, assignments, reviewSeals, protectedPropertyAliases } = context;
   const assignment = assignments.get(event.caseId);
   const payload = event.payload || {};
   const systems = payload.semanticSystems;
@@ -143,7 +143,9 @@ function validateReviewSeal(event, at, context) {
     && new Set(systems.map((system) => system.returnedModel)).size === 2
     && new Set(systems.map((system) => system.callId)).size === 2
     && new Set(systems.map((system) => system.sessionIdSha256)).size === 2;
-  const reusedProperty = protectedPropertyGroups.get(payload.propertyGroupSha256);
+  const aliases = payload.propertyAliases;
+  const aliasesValid = validPropertyAliases(aliases);
+  const reusedProperty = aliasesValid && aliases.find((alias) => protectedPropertyAliases.has(alias.sha256));
   if (!assignment || reviewSeals.has(event.caseId) || event.corpusId !== assignment.corpusId
     || assignment.payload?.split !== "fail-safe" || payload.assignmentEventSha256 !== assignment.eventSha256
     || payload.sourceSha256 !== assignment.payload?.sourceSha256
@@ -159,8 +161,8 @@ function validateReviewSeal(event, at, context) {
     || !/^[1-9][0-9]*$/.test(payload.reviewerWorkflowRunId || "")
     || !/^[1-9][0-9]*$/.test(payload.reviewerWorkflowRunAttempt || "")
     || !SHA256.test(payload.protectedChallengeSha256 || "") || !systemsValid
-    || !SHA256.test(payload.propertyIdentityEvidenceSha256 || "") || !SHA256.test(payload.propertyGroupSha256 || "")
-    || (reusedProperty && reusedProperty.caseId !== event.caseId)
+    || !SHA256.test(payload.propertyIdentityEvidenceSha256 || "") || !SHA256.test(payload.propertyAliasReceiptSha256 || "")
+    || !aliasesValid || (reusedProperty && protectedPropertyAliases.get(reusedProperty.sha256)?.caseId !== event.caseId)
     || payload.productCodeMounted !== false || payload.productOutputAvailable !== false
     || payload.geometryArtifactsExpected !== 0 || payload.status !== "approved"
     || payload.critical !== 0 || payload.major !== 0 || payload.sealedAt !== event.issuedAt
@@ -169,7 +171,18 @@ function validateReviewSeal(event, at, context) {
     return;
   }
   reviewSeals.set(event.caseId, event);
-  protectedPropertyGroups.set(payload.propertyGroupSha256, event);
+  aliases.forEach((alias) => protectedPropertyAliases.set(alias.sha256, event));
+}
+
+function validPropertyAliases(value) {
+  const kinds = new Set(["county-parcel", "county-subdivision-lot", "county-subdivision-block-lot",
+    "county-subdivision-tract"]);
+  return Array.isArray(value) && value.length > 0
+    && value.every((alias) => alias && typeof alias === "object" && !Array.isArray(alias)
+      && Object.keys(alias).length === 2 && kinds.has(alias.kind) && SHA256.test(alias.sha256 || ""))
+    && new Set(value.map((alias) => alias.kind)).size === value.length
+    && new Set(value.map((alias) => alias.sha256)).size === value.length
+    && stableJson(value) === stableJson([...value].sort((a, b) => stableJson(a).localeCompare(stableJson(b))));
 }
 
 function validateAppendOnly(previous, current, errors) {

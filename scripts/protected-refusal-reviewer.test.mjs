@@ -70,19 +70,27 @@ test("two approving systems must agree on source-visible property identity", () 
   const left = normalizeAssessment(base, candidate); const right = normalizeAssessment(structuredClone(base), candidate);
   const result = reconcilePropertyIdentity(left.propertyIdentity, right.propertyIdentity);
   assert.match(result.propertyIdentityEvidenceSha256, /^[a-f0-9]{64}$/);
-  assert.match(result.propertyGroupSha256, /^[a-f0-9]{64}$/);
+  assert.match(result.propertyAliasReceiptSha256, /^[a-f0-9]{64}$/);
+  assert.ok(result.propertyAliases.some((alias) => alias.kind === "county-parcel"));
   const laterInstrumentLeft = structuredClone(left.propertyIdentity);
   const laterInstrumentRight = structuredClone(right.propertyIdentity);
   laterInstrumentLeft.recordingInstrument = "ENTRY 88888";
   laterInstrumentRight.recordingInstrument = "ENTRY 88888";
-  assert.equal(reconcilePropertyIdentity(laterInstrumentLeft, laterInstrumentRight).propertyGroupSha256,
-    result.propertyGroupSha256, "same parcel/tract across recording instruments must dedupe");
+  assert.deepEqual(reconcilePropertyIdentity(laterInstrumentLeft, laterInstrumentRight).propertyAliases,
+    result.propertyAliases, "same parcel/tract across recording instruments must dedupe");
   const plattedLeft = { county: "UTAH COUNTY", recordingInstrument: "ENTRY 11111", subdivision: "SUNSET PLAT",
     lot: "LOT 7", block: "BLOCK 2", parcel: null, tract: null, citations: [] };
   const plattedRight = { ...plattedLeft, recordingInstrument: "ENTRY 22222" };
-  assert.equal(reconcilePropertyIdentity(plattedLeft, plattedLeft).propertyGroupSha256,
-    reconcilePropertyIdentity(plattedRight, plattedRight).propertyGroupSha256,
+  assert.deepEqual(reconcilePropertyIdentity(plattedLeft, plattedLeft).propertyAliases,
+    reconcilePropertyIdentity(plattedRight, plattedRight).propertyAliases,
     "same subdivision/lot/block in separate title instruments must dedupe");
+  const basePlat = reconcilePropertyIdentity(plattedLeft, plattedLeft).propertyAliases;
+  const withParcel = reconcilePropertyIdentity({ ...plattedLeft, parcel: "12:34" }, { ...plattedLeft, parcel: "12:34" }).propertyAliases;
+  const withTract = reconcilePropertyIdentity({ ...plattedRight, tract: "TRACT A" }, { ...plattedRight, tract: "TRACT A" }).propertyAliases;
+  const baseHashes = new Set(basePlat.map((alias) => alias.sha256));
+  assert.ok(withParcel.some((alias) => baseHashes.has(alias.sha256)));
+  assert.ok(withTract.some((alias) => baseHashes.has(alias.sha256)),
+    "optional parcel or tract must not remove the stable subdivision/lot/block aliases");
   const tamperedBasis = structuredClone(base); tamperedBasis.expectedFailureStage = "execute";
   assert.throws(() => normalizeAssessment(tamperedBasis, candidate), /exact candidate refusal/);
   const changed = structuredClone(right.propertyIdentity); changed.parcel = "99:999:9999";
@@ -99,7 +107,9 @@ test("review index enforces call, session, provider, returned-model, challenge, 
     selectorSha256: candidate.selectorSha256, expectedFailureCandidateSha256: candidate.expectedFailureCandidateSha256,
     expectedFailureCode: "PARSE_UNRESOLVED", assessmentSha256s: [hash("a1"), hash("a2")],
     callReceiptSha256s: calls.map((item) => item.receiptSha256), calls,
-    propertyIdentityEvidenceSha256: hash("identity"), propertyGroupSha256: hash("group"),
+    propertyIdentityEvidenceSha256: hash("identity"),
+    propertyAliases: [{ kind: "county-subdivision-block-lot", sha256: hash("group") }],
+    propertyAliasReceiptSha256: hash("alias-receipt"),
     status: "approved", critical: 0, major: 0,
   };
   const request = { requestId, reviewRequestSha256: hash("review"), verifierPolicyTip: "a".repeat(40) };

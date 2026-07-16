@@ -431,9 +431,15 @@ test("fail-safe truth requires a prior distinct two-system protected review and 
   assert.equal(validateCorpusRegistry({ registry }).ok, true);
   registry = appendCorpusRegistryEvent(registry, withIssued(assignmentBody(1, { split: "fail-safe" }), iso(4)));
   const second = registry.events.at(-1);
-  const reused = reviewBody(second, 1, iso(5)); reused.payload.propertyGroupSha256 = review.payload.propertyGroupSha256;
+  const reused = reviewBody(second, 1, iso(5));
+  reused.payload.propertyAliases = [review.payload.propertyAliases.find((alias) => alias.kind === "county-subdivision-block-lot"),
+    reused.payload.propertyAliases.find((alias) => alias.kind === "county-parcel")]
+    .sort((a, b) => stableJson(a).localeCompare(stableJson(b)));
   registry = appendCorpusRegistryEvent(registry, withIssued(reused, iso(5)));
-  assert.equal(validateCorpusRegistry({ registry }).ok, false);
+  const conflict = validateCorpusRegistry({ registry });
+  assert.equal(conflict.ok, false);
+  assert.ok(conflict.errors.some((error) => error.code === "REGISTRY_REVIEW_SEAL_INVALID"),
+    "shared plat alias with a differing parcel alias must fail closed, not count as a distinct property");
 });
 
 test("review-seal callers can submit only an exact protected-run reference, never hash-shaped review facts", () => {
@@ -747,7 +753,11 @@ function reviewBody(assignment, index, sealedAt) {
         sessionIdSha256: hash(`session-meta-${index}`), receiptSha256: hash(`receipt-meta-${index}`),
         assessmentSha256: hash(`assessment-meta-${index}`) },
     ], propertyIdentityEvidenceSha256: hash(`property-evidence-${index}`),
-    propertyGroupSha256: hash(`protected-property-group-${index}`), productCodeMounted: false,
+    propertyAliases: [
+      { kind: "county-parcel", sha256: hash(`protected-parcel-${index}`) },
+      { kind: "county-subdivision-block-lot", sha256: hash(`protected-plat-${index}`) },
+    ].sort((a, b) => stableJson(a).localeCompare(stableJson(b))),
+    propertyAliasReceiptSha256: hash(`property-alias-receipt-${index}`), productCodeMounted: false,
     productOutputAvailable: false, geometryArtifactsExpected: 0, status: "approved", critical: 0, major: 0, sealedAt,
   } };
 }

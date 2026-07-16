@@ -6,7 +6,7 @@ import { mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync }
 import { dirname, join, relative, resolve } from "node:path";
 import { createFileSet, encryptBundle } from "./official-evaluator-core.mjs";
 import {
-  REVIEW_MODELS, buildAssessmentPrompt, buildAssessmentSchema, buildReviewIndex,
+  REVIEW_MODELS, buildAssessmentPrompt, buildAssessmentSchema, buildPropertyAliases, buildReviewIndex,
   normalizeAssessment, reconcilePropertyIdentity, sealCallReceipt, sha256, stableJson,
   validateCatalogModels, validateProtectedReviewerEnvironment, validateReviewDispatchRequest,
   validateReviewIndex, validateReviewRequest,
@@ -126,6 +126,8 @@ async function review() {
     const property = reconcilePropertyIdentity(assessments[0].propertyIdentity, assessments[1].propertyIdentity);
     writeFileSync(join(caseOut, "property-identity-evidence.json"), `${JSON.stringify(property.propertyIdentityEvidence, null, 2)}\n`,
       { flag: "wx", mode: 0o600 });
+    writeFileSync(join(caseOut, "property-alias-receipt.json"), `${JSON.stringify(property.propertyAliasReceipt, null, 2)}\n`,
+      { flag: "wx", mode: 0o600 });
     caseResults.push({
       caseId: candidate.caseId, corpusId: candidate.corpusId,
       assignmentEventSha256: candidate.assignmentEventSha256, sourceSha256: candidate.sourceSha256,
@@ -135,7 +137,8 @@ async function review() {
       assessmentSha256s: assessments.map((assessment) => sha256(`${JSON.stringify(assessment, null, 2)}\n`)),
       callReceiptSha256s: calls.map((call) => call.receiptSha256), calls,
       propertyIdentityEvidenceSha256: property.propertyIdentityEvidenceSha256,
-      propertyGroupSha256: property.propertyGroupSha256,
+      propertyAliases: property.propertyAliases,
+      propertyAliasReceiptSha256: property.propertyAliasReceiptSha256,
       status: "approved", critical: 0, major: 0,
     });
   }
@@ -231,7 +234,18 @@ function deriveReviewEvent() {
   if (new Set(semanticSystems.map((item) => item.provider)).size !== 2
     || new Set(semanticSystems.map((item) => item.returnedModel)).size !== 2) throw new Error("Protected review systems are not independent.");
   const property = JSON.parse(readFileSync(join(root, "cases", item.caseId, "property-identity-evidence.json"), "utf8"));
-  if (sha256(stableJson(property)) !== item.propertyIdentityEvidenceSha256) throw new Error("Protected property evidence differs.");
+  if (sha256(stableJson(property)) !== item.propertyIdentityEvidenceSha256
+    || stableJson(property.propertyAliases) !== stableJson(item.propertyAliases)
+    || stableJson(buildPropertyAliases(property.agreedIdentity)) !== stableJson(item.propertyAliases)) {
+    throw new Error("Protected property evidence differs.");
+  }
+  const aliasReceipt = JSON.parse(readFileSync(join(root, "cases", item.caseId, "property-alias-receipt.json"), "utf8"));
+  if (sha256(stableJson(aliasReceipt)) !== item.propertyAliasReceiptSha256
+    || aliasReceipt?.schemaVersion !== 1 || aliasReceipt?.kind !== "source-visible-property-alias-receipt"
+    || aliasReceipt.propertyIdentityEvidenceSha256 !== item.propertyIdentityEvidenceSha256
+    || stableJson(aliasReceipt.propertyAliases) !== stableJson(item.propertyAliases)) {
+    throw new Error("Protected property alias receipt differs.");
+  }
   const fileSetReceipt = JSON.parse(readFileSync(join(root, ".evidence-fileset-receipt.json"), "utf8"));
   if (fileSetReceipt.role !== "evidence" || fileSetReceipt.requestId !== reference.reviewRequestId
     || !/^[a-f0-9]{64}$/.test(fileSetReceipt.fileRootSha256 || "")) throw new Error("Protected evidence file-set receipt is invalid.");
@@ -244,7 +258,8 @@ function deriveReviewEvent() {
     verifierPolicyTip: index.verifierPolicyTip, reviewerWorkflowRef: index.reviewerWorkflowRef,
     reviewerWorkflowRunId: index.reviewerWorkflowRunId, reviewerWorkflowRunAttempt: index.reviewerWorkflowRunAttempt,
     protectedChallengeSha256: index.protectedChallengeSha256, semanticSystems,
-    propertyIdentityEvidenceSha256: item.propertyIdentityEvidenceSha256, propertyGroupSha256: item.propertyGroupSha256,
+    propertyIdentityEvidenceSha256: item.propertyIdentityEvidenceSha256, propertyAliases: item.propertyAliases,
+    propertyAliasReceiptSha256: item.propertyAliasReceiptSha256,
     productCodeMounted: false, productOutputAvailable: false, geometryArtifactsExpected: 0,
     status: "approved", critical: 0, major: 0,
   } };

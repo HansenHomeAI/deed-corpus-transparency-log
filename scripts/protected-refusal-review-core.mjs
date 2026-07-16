@@ -250,25 +250,40 @@ export function reconcilePropertyIdentity(left, right) {
   const rightKey = Object.fromEntries(identityFields.map((field) => [field, right[field]]));
   const agreedIdentity = Object.fromEntries(identityFields.map((field) => [field,
     leftKey[field] !== null && leftKey[field] === rightKey[field] ? leftKey[field] : null]));
-  const propertySpecific = ["recordingInstrument", "subdivision", "lot", "block", "parcel", "tract"];
   const stronger = ["subdivision", "lot", "block", "parcel", "tract"];
   if (stronger.some((field) => leftKey[field] !== null && rightKey[field] !== null && leftKey[field] !== rightKey[field])) {
     throw new Error("Independent reviewers reported conflicting stable property identifiers.");
   }
-  if (!propertySpecific.some((field) => agreedIdentity[field] !== null)) {
-    throw new Error("Independent reviewers share no stable source-visible property identifier.");
+  const propertyAliases = buildPropertyAliases(agreedIdentity);
+  if (propertyAliases.length < 1) {
+    throw new Error("Independent reviewers share no safe strong source-visible property alias.");
   }
-  const hasStronger = stronger.some((field) => agreedIdentity[field] !== null);
-  const groupIdentity = { ...agreedIdentity,
-    recordingInstrument: hasStronger ? null : agreedIdentity.recordingInstrument };
-  const evidence = { reviewerIdentities: [leftKey, rightKey], agreedIdentity, groupIdentity,
+  const evidence = { reviewerIdentities: [leftKey, rightKey], agreedIdentity, propertyAliases,
     reviewerCitations: [left.citations, right.citations] };
+  const propertyIdentityEvidenceSha256 = sha256(stableJson(evidence));
+  const propertyAliasReceipt = { schemaVersion: 1, kind: "source-visible-property-alias-receipt",
+    propertyIdentityEvidenceSha256, propertyAliases };
   return {
     propertyIdentityEvidence: evidence,
-    propertyIdentityEvidenceSha256: sha256(stableJson(evidence)),
-    propertyGroupSha256: sha256(stableJson({ schemaVersion: 1, kind: "source-visible-property-group",
-      identity: groupIdentity })),
+    propertyIdentityEvidenceSha256,
+    propertyAliases,
+    propertyAliasReceipt,
+    propertyAliasReceiptSha256: sha256(stableJson(propertyAliasReceipt)),
   };
+}
+
+export function buildPropertyAliases(identity) {
+  if (!identity?.county) return [];
+  const definitions = [];
+  const add = (kind, fields) => {
+    if (fields.every((field) => identity[field])) definitions.push({ kind,
+      sha256: sha256(stableJson({ schemaVersion: 1, kind, identity: Object.fromEntries(fields.map((field) => [field, identity[field]])) })) });
+  };
+  add("county-parcel", ["county", "parcel"]);
+  add("county-subdivision-lot", ["county", "subdivision", "lot"]);
+  add("county-subdivision-block-lot", ["county", "subdivision", "block", "lot"]);
+  add("county-subdivision-tract", ["county", "subdivision", "tract"]);
+  return definitions.sort((a, b) => stableJson(a).localeCompare(stableJson(b)));
 }
 
 export function sealCallReceipt(input) {
@@ -303,11 +318,13 @@ export function validateCallReceipt(receipt) {
 
 export function buildReviewIndex({ request, challengeSha256, catalogSha256, cases, hosted }) {
   if (!SHA256.test(challengeSha256 || "") || !SHA256.test(catalogSha256 || "") || !Array.isArray(cases) || cases.length < 1) throw new Error("Review index inputs are invalid.");
-  const callIds = new Set(); const sessions = new Set(); const propertyGroups = new Set();
+  const callIds = new Set(); const sessions = new Set(); const propertyAliases = new Set();
   for (const item of cases) {
     exactKeys(item, ["caseId", "corpusId", "assignmentEventSha256", "sourceSha256", "selectorSha256",
       "expectedFailureCandidateSha256", "expectedFailureCode", "assessmentSha256s", "callReceiptSha256s", "calls",
-      "propertyIdentityEvidenceSha256", "propertyGroupSha256", "status", "critical", "major"], "review-index case");
+      "propertyIdentityEvidenceSha256", "propertyAliases", "propertyAliasReceiptSha256",
+      "status", "critical", "major"], "review-index case");
+    const aliasesValid = validPropertyAliases(item.propertyAliases);
     if (!Array.isArray(item.calls) || item.calls.length !== 2) throw new Error("Every case requires exactly two independent semantic calls.");
     item.calls.forEach(validateCallReceipt);
     if (new Set(item.calls.map((call) => call.modelRequested)).size !== 2
@@ -321,12 +338,13 @@ export function buildReviewIndex({ request, challengeSha256, catalogSha256, case
       || !REFUSAL_CODES.includes(item.expectedFailureCode)
       || !Array.isArray(item.assessmentSha256s) || item.assessmentSha256s.length !== 2 || item.assessmentSha256s.some((value) => !SHA256.test(value))
       || stableJson(item.callReceiptSha256s) !== stableJson(item.calls.map((call) => call.receiptSha256))
-      || !SHA256.test(item.propertyIdentityEvidenceSha256 || "") || !SHA256.test(item.propertyGroupSha256 || "")
-      || propertyGroups.has(item.propertyGroupSha256) || item.status !== "approved" || item.critical !== 0 || item.major !== 0) {
+      || !SHA256.test(item.propertyIdentityEvidenceSha256 || "") || !SHA256.test(item.propertyAliasReceiptSha256 || "")
+      || !aliasesValid || item.propertyAliases.some((alias) => propertyAliases.has(alias.sha256))
+      || item.status !== "approved" || item.critical !== 0 || item.major !== 0) {
       throw new Error("Call independence, protected challenge, or unique property-group binding failed.");
     }
     item.calls.forEach((call) => { callIds.add(call.callId); sessions.add(call.sessionIdSha256); });
-    propertyGroups.add(item.propertyGroupSha256);
+    item.propertyAliases.forEach((alias) => propertyAliases.add(alias.sha256));
   }
   return {
     schemaVersion: 1, kind: "spaceport-protected-refusal-review-index", requestId: request.requestId,
@@ -366,6 +384,13 @@ function stringArray(value) { return Array.isArray(value) && value.length > 0 &&
   && value.every((item) => typeof item === "string" && item.trim() && item.length <= 2000); }
 function hashArray(value) { return Array.isArray(value) && value.length > 0 && new Set(value).size === value.length
   && value.every((item) => SHA256.test(item || "")); }
+function validPropertyAliases(value) { const kinds = new Set(["county-parcel", "county-subdivision-lot",
+  "county-subdivision-block-lot", "county-subdivision-tract"]); return Array.isArray(value) && value.length > 0
+  && value.every((alias) => alias && typeof alias === "object" && !Array.isArray(alias)
+    && Object.keys(alias).length === 2 && typeof alias.kind === "string" && kinds.has(alias.kind)
+    && SHA256.test(alias.sha256 || "")) && new Set(value.map((alias) => alias.sha256)).size === value.length
+  && new Set(value.map((alias) => alias.kind)).size === value.length
+  && stableJson(value) === stableJson([...value].sort((a, b) => stableJson(a).localeCompare(stableJson(b)))); }
 function exactKeys(value, expected, label) {
   if (!value || typeof value !== "object" || Array.isArray(value)
     || Object.keys(value).length !== expected.length || expected.some((key) => !Object.hasOwn(value, key))) {
