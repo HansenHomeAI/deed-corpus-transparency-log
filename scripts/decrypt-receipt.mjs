@@ -19,7 +19,16 @@ verifyAttestation(bytes, input, bundlePath, expectedSignerDigest);
 const receipt = decryptProtectedAppendReceipt(bytes, readFileSync(privateKeyPath, "utf8"), keyId,
   { expectedRequestSha256, expectedCiphertextSha256, expectedSignerDigest });
 writeFileSync(output, `${JSON.stringify(receipt, null, 2)}\n`, { flag: "wx", mode: 0o600 });
-process.stdout.write(`${JSON.stringify({ ok: true, output, requestSha256: receipt.requestSha256 })}\n`);
+const appended = receipt.kind === "spaceport-deed-corpus-protected-append-receipt";
+process.stdout.write(`${JSON.stringify({
+  ok: appended,
+  verified: true,
+  outcome: appended ? "appended" : "rejected",
+  appended,
+  output,
+  requestSha256: receipt.requestSha256,
+})}\n`);
+if (!appended) process.exitCode = 2;
 
 function verifyAttestation(bytes, artifactPath, retainedBundlePath, signerDigest) {
   const result = spawnSync("gh", ["attestation", "verify", artifactPath,

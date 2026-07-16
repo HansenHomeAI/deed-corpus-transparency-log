@@ -820,7 +820,7 @@ function decryptHybridPayload(encoded, privateKeyPem, expectedKeyId, maximumPlai
   }
 }
 
-function rejectionPaddedPlaintextBytes(registry) {
+export function rejectionPaddedPlaintextBytes(registry) {
   const registryBytes = Buffer.byteLength(JSON.stringify(registry || {}), "utf8");
   const target = Math.ceil((registryBytes + REJECTION_PADDING_HEADROOM_BYTES) / REJECTION_PADDING_BLOCK_BYTES)
     * REJECTION_PADDING_BLOCK_BYTES;
