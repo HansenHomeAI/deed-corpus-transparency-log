@@ -306,7 +306,7 @@ export function buildPropertyIdentifierCommitments(identity) {
 
 export function canonicalizePropertyIdentifier(field, value) {
   let text = normalizeOriginal(value).toUpperCase().replace(/&/g, " AND ");
-  if (field === "county") text = text.replace(/^COUNTY\s+OF\s+/, "").replace(/\s+COUNTY$/, "");
+  if (field === "county") text = text.replace(/^COUNTY\s+OF\s+/, "").replace(/\s+(COUNTY|CO)\.?$/, "");
   if (field === "subdivision") text = text
     .replace(/\b(SUBDIVISION|SUBDIV|SUBD|SUB)\.?\s*(?:(NUMBER|NO\.?)\s*|#\s*)?([0-9]+)\s*$/, "$3")
     .replace(/\b(SUBDIVISION|SUBDIV|SUBD|SUB)\.?$/, "");

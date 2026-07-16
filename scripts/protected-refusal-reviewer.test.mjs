@@ -31,6 +31,7 @@ test("property canonicalization handles common labels without collapsing segment
     ["lot", "Lot No. 007", "7"],
     ["block", "Block 02", "2"],
     ["county", "County of Utah", "Utah County"],
+    ["county", "Utah Co.", "Utah County"],
   ]) assert.equal(canonicalizePropertyIdentifier(field, left), canonicalizePropertyIdentifier(field, right), `${field} variant`);
   assert.notEqual(canonicalizePropertyIdentifier("parcel", "Parcel ID 001-02"),
     canonicalizePropertyIdentifier("parcel", "APN 102"), "segmented and concatenated parcel identifiers can be distinct");
