@@ -286,6 +286,7 @@ test("encrypted append receipts bind consume nonce, execution seal, registry, au
   const consumeRequestSha256 = sha256(stableJson(consumeIntent));
   assert.equal(consumePublicResult.artifactName, `deed-registry-receipt-${consumeRequestSha256}`);
   const metadata = JSON.parse(readFileSync(join(consumeResult.receiptDirectory, "receipt-metadata.json"), "utf8"));
+  assert.equal(metadata.outcome, "appended");
   assert.equal(metadata.requestSha256, consumeRequestSha256);
   assert.equal(metadata.artifactName, consumePublicResult.artifactName);
   const consumeEnvelope = readIndex(fixture).envelopes.at(-1);
@@ -704,6 +705,13 @@ function assertEncryptedRejection(result, intent, fixture, expectedCode) {
   assert.equal(receipt.kind, "spaceport-deed-corpus-protected-append-rejection-receipt");
   assert.equal(receipt.registryEventCount, latestState(fixture).registry.events.length);
   assert.ok(receipt.errors.some((error) => error.code === expectedCode), JSON.stringify(receipt.errors));
+  const metadataBytes = readFileSync(join(result.receiptDirectory, "receipt-metadata.json"), "utf8");
+  const metadata = JSON.parse(metadataBytes);
+  assert.equal(metadata.outcome, "rejected");
+  assert.equal(metadata.publicIndexSha256, indexSha256(index));
+  for (const secret of [intent.eventData.caseId, intent.eventData.corpusId, expectedCode]) {
+    assert.equal(metadataBytes.includes(secret), false);
+  }
   return receipt;
 }
 
