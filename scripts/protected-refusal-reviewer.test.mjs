@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
-  REVIEW_MODELS, REVIEW_WORKFLOW_REF, buildAssessmentPrompt, buildReviewIndex, normalizeAssessment,
+  REVIEW_MODELS, REVIEW_WORKFLOW_REF, buildAssessmentPrompt, buildReviewIndex, canonicalizePropertyIdentifier, normalizeAssessment,
   reconcilePropertyIdentity, sealCallReceipt, sha256, stableJson, validateCatalogModels,
   validateReviewIndex, validateReviewRequest,
 } from "./protected-refusal-review-core.mjs";
@@ -23,6 +23,18 @@ const candidate = {
     zeroGeometryPolicy: { geometryArtifactsExpected: 0, partialCertifiedGeometryAllowed: false } },
 };
 candidate.expectedFailureCandidateSha256 = hashJson(candidate.expectedFailureCandidate);
+
+test("property canonicalization handles common labels without collapsing segmented identifiers", () => {
+  for (const [field, left, right] of [
+    ["subdivision", "Sunset Subdivision No. 2", "Sunset Subd. #2"],
+    ["parcel", "Parcel ID 001-02", "APN 1-2"],
+    ["lot", "Lot No. 007", "7"],
+    ["block", "Block 02", "2"],
+    ["county", "County of Utah", "Utah County"],
+  ]) assert.equal(canonicalizePropertyIdentifier(field, left), canonicalizePropertyIdentifier(field, right), `${field} variant`);
+  assert.notEqual(canonicalizePropertyIdentifier("parcel", "Parcel ID 001-02"),
+    canonicalizePropertyIdentifier("parcel", "APN 102"), "segmented and concatenated parcel identifiers can be distinct");
+});
 
 test("review candidates bind exact source, complete ordered page selector, and expected-code candidate", () => {
   const review = { schemaVersion: 1, kind: "spaceport-refusal-truth-review-candidates", requestId,
