@@ -434,6 +434,7 @@ export function buildProtectedAppendReceipt({ intent, event, state, authority, p
     algorithm: REQUEST_ALGORITHM,
     keyId: intent.response.keyId,
     responseForRequestSha256: requestSha256,
+    plaintextReceiptSha256: sha256(Buffer.from(`${JSON.stringify(receipt)}\n`, "utf8")),
     envelopeBase64url,
   };
   const bytes = Buffer.from(`${JSON.stringify(encrypted, null, 2)}\n`, "utf8");
@@ -480,6 +481,7 @@ export function buildProtectedAppendRejectionReceipt({ intent, state, authority,
     algorithm: REQUEST_ALGORITHM,
     keyId: intent.response.keyId,
     responseForRequestSha256: requestSha256,
+    plaintextReceiptSha256: sha256(Buffer.from(`${JSON.stringify(receipt)}\n`, "utf8")),
     envelopeBase64url,
   };
   const bytes = Buffer.from(`${JSON.stringify(encrypted, null, 2)}\n`, "utf8");
@@ -494,11 +496,13 @@ export function decryptProtectedAppendReceipt(bytes, privateKeyPem, expectedKeyI
   let encrypted;
   try { encrypted = JSON.parse(Buffer.from(bytes).toString("utf8")); }
   catch { throw new Error("Encrypted receipt is not valid JSON."); }
-  const fields = new Set(["schemaVersion", "kind", "algorithm", "keyId", "responseForRequestSha256", "envelopeBase64url"]);
+  const fields = new Set(["schemaVersion", "kind", "algorithm", "keyId", "responseForRequestSha256",
+    "plaintextReceiptSha256", "envelopeBase64url"]);
   if (Object.keys(encrypted || {}).some((key) => !fields.has(key))
     || encrypted?.schemaVersion !== 1 || encrypted.kind !== "spaceport-deed-corpus-encrypted-append-receipt"
     || encrypted.algorithm !== REQUEST_ALGORITHM || encrypted.keyId !== expectedKeyId
     || encrypted.responseForRequestSha256 !== expectedRequestSha256
+    || !SHA256.test(encrypted.plaintextReceiptSha256 || "")
     || Buffer.from(bytes).toString("utf8") !== `${JSON.stringify(encrypted, null, 2)}\n`) {
     throw new Error("Encrypted receipt schema, key, request binding, or canonical bytes are invalid.");
   }
@@ -507,6 +511,9 @@ export function decryptProtectedAppendReceipt(bytes, privateKeyPem, expectedKeyI
       allowPadded: true, returnPaddingMetadata: true,
     });
   const receipt = decrypted.value;
+  if (encrypted.plaintextReceiptSha256 !== sha256(Buffer.from(`${JSON.stringify(receipt)}\n`, "utf8"))) {
+    throw new Error("Attested encrypted wrapper does not bind the decrypted receipt bytes.");
+  }
   if (receipt?.kind === "spaceport-deed-corpus-protected-append-rejection-receipt") {
     if (decrypted.paddedPlaintextBytes !== rejectionPaddedPlaintextBytes(receipt.registry)) {
       throw new Error("Protected rejection receipt lacks its fixed authenticated padding class.");
