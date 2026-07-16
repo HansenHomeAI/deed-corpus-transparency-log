@@ -39,9 +39,19 @@ test("property canonicalization handles common labels without collapsing segment
     ["block", "Block IV", "Block 4"],
     ["tract", "Tract Twenty One B", "Tract 21 B"],
     ["parcel", "Parcel Twenty-One B", "Parcel 21 B"],
+    ["county", "【Utah County，】", "Utah County"],
+    ["subdivision", "[Sunset Subdivision];", "Sunset Subdivision"],
+    ["lot", "Lot: 7.", "Lot 7"],
+    ["block", "Block—2", "Block 2"],
+    ["tract", "Tract (VII).", "Tract 7"],
+    ["parcel", "Parcel ID：001-02；", "APN 1-2"],
   ]) assert.equal(canonicalizePropertyIdentifier(field, left), canonicalizePropertyIdentifier(field, right), `${field} variant`);
   assert.notEqual(canonicalizePropertyIdentifier("parcel", "Parcel ID 001-02"),
     canonicalizePropertyIdentifier("parcel", "APN 102"), "segmented and concatenated parcel identifiers can be distinct");
+  assert.notEqual(canonicalizePropertyIdentifier("parcel", "Parcel 1:2"),
+    canonicalizePropertyIdentifier("parcel", "Parcel 12"), "internal numeric separators retain component boundaries");
+  assert.notEqual(canonicalizePropertyIdentifier("parcel", "Parcel AB/CD"),
+    canonicalizePropertyIdentifier("parcel", "Parcel ABCD"), "internal alphabetic separators retain component boundaries");
   assert.notEqual(canonicalizePropertyIdentifier("subdivision", "Silver One Lake"),
     canonicalizePropertyIdentifier("subdivision", "Silver 1 Lake"), "proper-name number words are not globally rewritten");
   assert.notEqual(canonicalizePropertyIdentifier("lot", "Lot One Two"),
@@ -174,6 +184,21 @@ test("review index enforces call, session, provider, returned-model, challenge, 
   assert.throws(() => buildReviewIndex({ request, challengeSha256: challenge, catalogSha256: hash("catalog"),
     cases: [caseResult, replay], hosted }), /alias replay is not unique/,
   "spelled and numeric identifier forms must not enter the protected index as distinct properties");
+  const punctuatedProperty = reconcilePropertyIdentity({ ...numericIdentity, county: "Utah County,",
+    subdivision: "[Sunset Subdivision];", lot: "Lot: 7.", block: "Block—2" },
+  { ...numericIdentity, county: "Utah County,", subdivision: "[Sunset Subdivision];", lot: "Lot: 7.", block: "Block—2" });
+  const plainProperty = reconcilePropertyIdentity({ ...numericIdentity, county: "Utah County",
+    subdivision: "Sunset Subdivision", lot: "Lot 7", block: "Block 2" },
+  { ...numericIdentity, county: "Utah County", subdivision: "Sunset Subdivision", lot: "Lot 7", block: "Block 2" });
+  assert.deepEqual(punctuatedProperty.propertyAliases, plainProperty.propertyAliases);
+  const punctuationBase = { ...structuredClone(caseResult), propertyAliases: punctuatedProperty.propertyAliases,
+    propertyIdentifierCommitments: punctuatedProperty.propertyIdentifierCommitments };
+  const punctuationReplay = nextCase(punctuationBase, "dp-aabbaabbaabb", challenge, 6);
+  punctuationReplay.propertyAliases = plainProperty.propertyAliases;
+  punctuationReplay.propertyIdentifierCommitments = plainProperty.propertyIdentifierCommitments;
+  assert.throws(() => buildReviewIndex({ request, challengeSha256: challenge, catalogSha256: hash("catalog"),
+    cases: [punctuationBase, punctuationReplay], hosted }), /alias replay is not unique/,
+  "ordinary and Unicode surrounding punctuation must not bypass duplicate-index rejection");
   const conflictingProperty = reconcilePropertyIdentity({ ...numericIdentity, block: "Block III" },
     { ...numericIdentity, block: "Block 3" });
   const conflict = nextCase(caseResult, "dp-fedcbafedcba", challenge, 4);

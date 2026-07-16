@@ -311,16 +311,19 @@ export function buildPropertyIdentifierCommitments(identity) {
 
 export function canonicalizePropertyIdentifier(field, value) {
   let text = normalizeOriginal(value).toUpperCase().replace(/&/g, " AND ");
-  if (field === "county") text = text.replace(/^COUNTY\s+OF\s+/, "").replace(/\s+(COUNTY|CO)\.?$/, "");
+  // Semantic labels are punctuation-insensitive, while replacing punctuation with spaces preserves the
+  // component boundaries later used to distinguish 1-2 from 12 and AB-CD from ABCD.
+  text = text.replace(/[’']/g, "").replace(/[\p{P}\p{S}]+/gu, " ").trim().replace(/\s+/g, " ");
+  if (field === "county") text = text.replace(/^COUNTY\s+OF\s+/, "").replace(/\s+(COUNTY|CO)$/, "");
   if (field === "subdivision") text = text
-    .replace(/\b(SUBDIVISION|SUBDIV|SUBD|SUB)\.?\s+(?=(PLAT|PHASE|UNIT)\b)/g, "")
-    .replace(/\b(SUBDIVISION|SUBDIV|SUBD|SUB)\.?\s*(?:(NUMBER|NO\.?)\s*|#\s*)?([0-9]+)\s*$/, "$3")
-    .replace(/\b(SUBDIVISION|SUBDIV|SUBD|SUB)\.?$/, "");
-  if (field === "lot") text = text.replace(/^\s*(LOT|LT)\.?\s*(NUMBER|NO\.?|#)?\s*/i, "");
-  if (field === "block") text = text.replace(/^\s*(BLOCK|BLK)\.?\s*(NUMBER|NO\.?|#)?\s*/i, "");
-  if (field === "tract") text = text.replace(/^\s*TRACT\.?\s*(NUMBER|NO\.?|#)?\s*/i, "");
-  if (field === "parcel") text = text.replace(/^\s*(PARCEL\s+ID|PARCEL|APN|TAX\s+ID)\.?\s*(NUMBER|NO\.?|#)?\s*/i, "");
-  let pieces = text.replace(/[’']/g, "").match(/[A-Z]+|[0-9]+/g) || [];
+    .replace(/\b(SUBDIVISION|SUBDIV|SUBD|SUB)\s+(?=(PLAT|PHASE|UNIT)\b)/g, "")
+    .replace(/\b(SUBDIVISION|SUBDIV|SUBD|SUB)\s*(?:(NUMBER|NO)\s*)?([0-9]+)\s*$/, "$3")
+    .replace(/\b(SUBDIVISION|SUBDIV|SUBD|SUB)$/, "");
+  if (field === "lot") text = text.replace(/^\s*(LOT|LT)\s*(NUMBER|NO)?\s*/i, "");
+  if (field === "block") text = text.replace(/^\s*(BLOCK|BLK)\s*(NUMBER|NO)?\s*/i, "");
+  if (field === "tract") text = text.replace(/^\s*TRACT\s*(NUMBER|NO)?\s*/i, "");
+  if (field === "parcel") text = text.replace(/^\s*(PARCEL\s+ID|PARCEL|APN|TAX\s+ID)\s*(NUMBER|NO)?\s*/i, "");
+  let pieces = text.match(/[A-Z]+|[0-9]+/g) || [];
   if (field === "subdivision") pieces = normalizeSubdivisionNumerals(pieces);
   if (["lot", "block", "tract", "parcel"].includes(field)) pieces = normalizeTypedIdentifierNumerals(pieces);
   return pieces.map((piece) => /^[0-9]+$/.test(piece) ? String(BigInt(piece)) : piece).join("-") || null;
