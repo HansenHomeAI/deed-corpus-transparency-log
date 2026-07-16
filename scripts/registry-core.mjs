@@ -394,6 +394,7 @@ export function buildProtectedAppendReceipt({ intent, event, state, authority, p
   const receipt = {
     schemaVersion: 1,
     kind: "spaceport-deed-corpus-protected-append-receipt",
+    bindingNonce: randomBytes(32).toString("hex"),
     requestSha256,
     eventType: event.eventType,
     corpusId: event.corpusId,
@@ -426,19 +427,20 @@ export function buildProtectedAppendReceipt({ intent, event, state, authority, p
   };
   validateProtectedReceipt(receipt, { expectedRequestSha256: requestSha256,
     expectedCiphertextSha256: publicCommitment.ciphertextSha256 });
+  const receiptBytes = Buffer.from(`${JSON.stringify(receipt, null, 2)}\n`, "utf8");
   const envelopeBase64url = encryptHybridPayload(receipt, intent.response.publicKeyPem, intent.response.keyId,
-    MAX_RECEIPT_BYTES, "Protected append receipt exceeds the 32-megabyte limit.");
+    MAX_RECEIPT_BYTES, "Protected append receipt exceeds the 32-megabyte limit.", { exactPlaintextBytes: receiptBytes });
   const encrypted = {
     schemaVersion: 1,
     kind: "spaceport-deed-corpus-encrypted-append-receipt",
     algorithm: REQUEST_ALGORITHM,
     keyId: intent.response.keyId,
     responseForRequestSha256: requestSha256,
-    plaintextReceiptSha256: sha256(Buffer.from(`${JSON.stringify(receipt)}\n`, "utf8")),
+    plaintextReceiptSha256: sha256(receiptBytes),
     envelopeBase64url,
   };
   const bytes = Buffer.from(`${JSON.stringify(encrypted, null, 2)}\n`, "utf8");
-  return { requestSha256, receipt, encrypted, bytes, encryptedReceiptSha256: sha256(bytes) };
+  return { requestSha256, receipt, receiptBytes, encrypted, bytes, encryptedReceiptSha256: sha256(bytes) };
 }
 
 export function buildProtectedAppendRejectionReceipt({ intent, state, authority, publicCommitment, errors, rejectedAt }) {
@@ -450,6 +452,7 @@ export function buildProtectedAppendRejectionReceipt({ intent, state, authority,
   const receipt = {
     schemaVersion: 1,
     kind: "spaceport-deed-corpus-protected-append-rejection-receipt",
+    bindingNonce: randomBytes(32).toString("hex"),
     requestSha256,
     eventType: intent.eventData.eventType,
     caseId: intent.eventData.caseId,
@@ -471,9 +474,11 @@ export function buildProtectedAppendRejectionReceipt({ intent, state, authority,
   };
   validateProtectedRejectionReceipt(receipt, { expectedRequestSha256: requestSha256,
     expectedCiphertextSha256: publicCommitment.ciphertextSha256 });
+  const receiptBytes = Buffer.from(`${JSON.stringify(receipt, null, 2)}\n`, "utf8");
   const envelopeBase64url = encryptHybridPayload(receipt, intent.response.publicKeyPem, intent.response.keyId,
     MAX_RECEIPT_BYTES, "Protected rejection receipt exceeds the 32-megabyte limit.", {
       paddedPlaintextBytes: rejectionPaddedPlaintextBytes(receipt.registry),
+      exactPlaintextBytes: receiptBytes,
     });
   const encrypted = {
     schemaVersion: 1,
@@ -481,15 +486,15 @@ export function buildProtectedAppendRejectionReceipt({ intent, state, authority,
     algorithm: REQUEST_ALGORITHM,
     keyId: intent.response.keyId,
     responseForRequestSha256: requestSha256,
-    plaintextReceiptSha256: sha256(Buffer.from(`${JSON.stringify(receipt)}\n`, "utf8")),
+    plaintextReceiptSha256: sha256(receiptBytes),
     envelopeBase64url,
   };
   const bytes = Buffer.from(`${JSON.stringify(encrypted, null, 2)}\n`, "utf8");
-  return { requestSha256, receipt, encrypted, bytes, encryptedReceiptSha256: sha256(bytes) };
+  return { requestSha256, receipt, receiptBytes, encrypted, bytes, encryptedReceiptSha256: sha256(bytes) };
 }
 
 export function decryptProtectedAppendReceipt(bytes, privateKeyPem, expectedKeyId,
-  { expectedRequestSha256, expectedCiphertextSha256, expectedSignerDigest = null } = {}) {
+  { expectedRequestSha256, expectedCiphertextSha256, expectedSignerDigest = null, returnReceiptBytes = false } = {}) {
   if (!Buffer.isBuffer(bytes) || bytes.length > MAX_RECEIPT_ARTIFACT_BYTES) {
     throw new Error("Encrypted receipt exceeds the 64-megabyte artifact limit.");
   }
@@ -510,10 +515,10 @@ export function decryptProtectedAppendReceipt(bytes, privateKeyPem, expectedKeyI
     MAX_RECEIPT_BYTES, "Decrypted protected append receipt exceeds the 32-megabyte limit.", {
       allowPadded: true, returnPaddingMetadata: true,
     });
-  const receipt = decrypted.value;
-  if (encrypted.plaintextReceiptSha256 !== sha256(Buffer.from(`${JSON.stringify(receipt)}\n`, "utf8"))) {
+  if (encrypted.plaintextReceiptSha256 !== sha256(decrypted.valueBytes)) {
     throw new Error("Attested encrypted wrapper does not bind the decrypted receipt bytes.");
   }
+  const receipt = decrypted.value;
   if (receipt?.kind === "spaceport-deed-corpus-protected-append-rejection-receipt") {
     if (decrypted.paddedPlaintextBytes !== rejectionPaddedPlaintextBytes(receipt.registry)) {
       throw new Error("Protected rejection receipt lacks its fixed authenticated padding class.");
@@ -523,13 +528,13 @@ export function decryptProtectedAppendReceipt(bytes, privateKeyPem, expectedKeyI
     if (decrypted.paddedPlaintextBytes !== null) throw new Error("Successful protected append receipts must not be padded.");
     validateProtectedReceipt(receipt, { expectedRequestSha256, expectedCiphertextSha256, expectedSignerDigest });
   }
-  return receipt;
+  return returnReceiptBytes ? { receipt, receiptBytes: decrypted.valueBytes } : receipt;
 }
 
 function validateProtectedRejectionReceipt(receipt,
   { expectedRequestSha256, expectedCiphertextSha256, expectedSignerDigest = null }) {
   const fields = new Set([
-    "schemaVersion", "kind", "requestSha256", "eventType", "caseId", "corpusId", "errors",
+    "schemaVersion", "kind", "bindingNonce", "requestSha256", "eventType", "caseId", "corpusId", "errors",
     "registryRootSha256", "registryEventCount", "registry", "rejectedAt", "authority", "publicCommitment",
   ]);
   const authorityFields = new Set([
@@ -546,6 +551,7 @@ function validateProtectedRejectionReceipt(receipt,
   if (!hasExactKeys(receipt, fields) || !hasExactKeys(authority, authorityFields)
     || !hasExactKeys(commitment, commitmentFields) || !checked.ok || !errorsValid
     || receipt.schemaVersion !== 1 || receipt.kind !== "spaceport-deed-corpus-protected-append-rejection-receipt"
+    || !SHA256.test(receipt.bindingNonce || "")
     || receipt.requestSha256 !== expectedRequestSha256 || !CORPUS_EVENT_TYPES.has(receipt.eventType)
     || (receipt.caseId !== null && !/^dp-[a-f0-9]{12}$/.test(receipt.caseId || ""))
     || (receipt.corpusId !== null && !/^corpus-[a-f0-9]{16}$/.test(receipt.corpusId || ""))
@@ -576,7 +582,7 @@ function validateProtectedReceipt(receipt, { expectedRequestSha256, expectedCiph
   const commitment = receipt?.publicCommitment || {};
   const authority = receipt?.authority || {};
   const receiptFields = new Set([
-    "schemaVersion", "kind", "requestSha256", "eventType", "corpusId", "campaign", "eventSha256",
+    "schemaVersion", "kind", "bindingNonce", "requestSha256", "eventType", "corpusId", "campaign", "eventSha256",
     "registryRootSha256", "registryEventCount", "registry", "issuedAt", "authority", "publicCommitment", "workflowOwned", "execution",
   ]);
   const authorityFields = new Set([
@@ -600,6 +606,7 @@ function validateProtectedReceipt(receipt, { expectedRequestSha256, expectedCiph
     || (receipt?.eventType === "execution-seal" && !hasExactKeys(receipt?.execution, executionFields))
     || receiptBytes > MAX_RECEIPT_BYTES || !registryValidation.ok
     || receipt?.schemaVersion !== 1 || receipt.kind !== "spaceport-deed-corpus-protected-append-receipt"
+    || !SHA256.test(receipt.bindingNonce || "")
     || receipt.requestSha256 !== expectedRequestSha256 || !CORPUS_EVENT_TYPES.has(receipt.eventType)
     || (receipt.corpusId !== null && !/^corpus-[a-f0-9]{16}$/.test(receipt.corpusId || ""))
     || !SHA256.test(receipt.eventSha256 || "") || !SHA256.test(receipt.registryRootSha256 || "")
@@ -727,16 +734,18 @@ export function encryptRequest(intent, publicKeyPem, keyId) {
 }
 
 function encryptHybridPayload(value, publicKeyPem, keyId, maximumPlaintextBytes, sizeError,
-  { paddedPlaintextBytes = null } = {}) {
+  { paddedPlaintextBytes = null, exactPlaintextBytes = null } = {}) {
   if (!/^[A-Za-z0-9._:-]{1,128}$/.test(keyId || "")) throw new Error("A non-sensitive request key id is required.");
   const requestKey = randomBytes(32);
   const iv = randomBytes(IV_BYTES);
-  let plaintext = Buffer.from(`${JSON.stringify(value)}\n`, "utf8");
+  let plaintext = exactPlaintextBytes === null
+    ? Buffer.from(`${JSON.stringify(value)}\n`, "utf8") : Buffer.from(exactPlaintextBytes);
   if (paddedPlaintextBytes !== null) {
     if (!Number.isInteger(paddedPlaintextBytes) || paddedPlaintextBytes < 1 || paddedPlaintextBytes > maximumPlaintextBytes) {
       throw new Error("Protected receipt padding target is invalid.");
     }
-    const wrapper = { schemaVersion: 1, kind: PADDED_PAYLOAD_KIND, payload: value, padding: "" };
+    const wrapper = { schemaVersion: 1, kind: PADDED_PAYLOAD_KIND,
+      payloadBase64url: plaintext.toString("base64url"), padding: "" };
     const emptyBytes = Buffer.from(`${JSON.stringify(wrapper)}\n`, "utf8");
     if (emptyBytes.length > paddedPlaintextBytes) throw new Error(sizeError);
     wrapper.padding = "0".repeat(paddedPlaintextBytes - emptyBytes.length);
@@ -810,18 +819,22 @@ function decryptHybridPayload(encoded, privateKeyPem, expectedKeyId, maximumPlai
   }
   if (plaintext.length > maximumPlaintextBytes) throw new Error(sizeError);
   try {
-    let value = JSON.parse(plaintext.toString("utf8"));
+    let valueBytes = plaintext;
+    let value = JSON.parse(valueBytes.toString("utf8"));
     let paddedPlaintextBytes = null;
     if (value?.kind === PADDED_PAYLOAD_KIND) {
-      const fields = new Set(["schemaVersion", "kind", "payload", "padding"]);
+      const fields = new Set(["schemaVersion", "kind", "payloadBase64url", "padding"]);
       if (!allowPadded || !hasExactKeys(value, fields) || value.schemaVersion !== 1
+        || !isCanonicalBase64url(value.payloadBase64url)
         || typeof value.padding !== "string" || !/^0*$/.test(value.padding)) {
         throw new Error("invalid padded payload");
       }
       paddedPlaintextBytes = plaintext.length;
-      value = value.payload;
+      valueBytes = Buffer.from(value.payloadBase64url, "base64url");
+      if (valueBytes.length > maximumPlaintextBytes) throw new Error(sizeError);
+      value = JSON.parse(valueBytes.toString("utf8"));
     }
-    return returnPaddingMetadata ? { value, paddedPlaintextBytes } : value;
+    return returnPaddingMetadata ? { value, valueBytes, paddedPlaintextBytes } : value;
   } catch {
     throw new Error("Decrypted append request is not valid JSON.");
   }
@@ -829,7 +842,11 @@ function decryptHybridPayload(encoded, privateKeyPem, expectedKeyId, maximumPlai
 
 export function rejectionPaddedPlaintextBytes(registry) {
   const registryBytes = Buffer.byteLength(JSON.stringify(registry || {}), "utf8");
-  const target = Math.ceil((registryBytes + REJECTION_PADDING_HEADROOM_BYTES) / REJECTION_PADDING_BLOCK_BYTES)
+  // Rejection padding carries the exact retained receipt bytes as base64url,
+  // so reserve its 4/3 expansion without depending on the error class or the
+  // rejected candidate's private fields.
+  const encodedRegistryCeiling = Math.ceil((registryBytes * 4) / 3);
+  const target = Math.ceil((encodedRegistryCeiling + REJECTION_PADDING_HEADROOM_BYTES) / REJECTION_PADDING_BLOCK_BYTES)
     * REJECTION_PADDING_BLOCK_BYTES;
   if (target < 1 || target > MAX_RECEIPT_BYTES) {
     throw new Error("Protected rejection receipt cannot fit its fixed authenticated padding class.");

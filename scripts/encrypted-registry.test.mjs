@@ -153,6 +153,12 @@ test("decrypt CLI distinguishes a verified committed append from a verified reje
     ok: true, verified: true, outcome: "appended", appended: true,
     output: join(fixture.directory, "success.json"), requestSha256: sha256(stableJson(successIntent)),
   });
+  const successRetainedBytes = readFileSync(join(fixture.directory, "success.json"));
+  const successWrapper = JSON.parse(readFileSync(join(success.receiptDirectory, "receipt.encrypted.json"), "utf8"));
+  const successReceipt = JSON.parse(successRetainedBytes);
+  assert.match(successReceipt.bindingNonce, /^[a-f0-9]{64}$/);
+  assert.equal(successWrapper.plaintextReceiptSha256, sha256(successRetainedBytes));
+  assertExactReceiptBytesRejectEquivalentRewrites(successRetainedBytes, successWrapper.plaintextReceiptSha256);
 
   const assignment = latestState(fixture).registry.events.at(-1);
   const rejectedIntent = intentFor(fixture, assignmentBody(1, { sourceSha256: assignment.payload.sourceSha256 }));
@@ -164,8 +170,14 @@ test("decrypt CLI distinguishes a verified committed append from a verified reje
     ok: false, verified: true, outcome: "rejected", appended: false,
     output: join(fixture.directory, "rejected.json"), requestSha256: sha256(stableJson(rejectedIntent)),
   });
-  assert.equal(JSON.parse(readFileSync(join(fixture.directory, "rejected.json"), "utf8")).kind,
-    "spaceport-deed-corpus-protected-append-rejection-receipt");
+  const rejectedRetainedBytes = readFileSync(join(fixture.directory, "rejected.json"));
+  const rejectedReceipt = JSON.parse(rejectedRetainedBytes);
+  const rejectedWrapper = JSON.parse(readFileSync(join(rejected.receiptDirectory, "receipt.encrypted.json"), "utf8"));
+  assert.equal(rejectedReceipt.kind, "spaceport-deed-corpus-protected-append-rejection-receipt");
+  assert.match(rejectedReceipt.bindingNonce, /^[a-f0-9]{64}$/);
+  assert.notEqual(rejectedReceipt.bindingNonce, successReceipt.bindingNonce);
+  assert.equal(rejectedWrapper.plaintextReceiptSha256, sha256(rejectedRetainedBytes));
+  assertExactReceiptBytesRejectEquivalentRewrites(rejectedRetainedBytes, rejectedWrapper.plaintextReceiptSha256);
 });
 
 test("encrypted genesis preserves the complete detailed private registry and frozen public anchor prefix", () => {
@@ -406,7 +418,8 @@ test("encrypted append receipts bind consume nonce, execution seal, registry, au
     responseKeys.privateKey, consumeWorkflowTip);
   const consumeWrapper = JSON.parse(readFileSync(join(consumeResult.receiptDirectory, "receipt.encrypted.json"), "utf8"));
   assert.equal(consumeWrapper.plaintextReceiptSha256,
-    sha256(Buffer.from(`${JSON.stringify(consumeReceipt)}\n`, "utf8")));
+    sha256(Buffer.from(`${JSON.stringify(consumeReceipt, null, 2)}\n`, "utf8")));
+  assert.match(consumeReceipt.bindingNonce, /^[a-f0-9]{64}$/);
   assert.equal(consumeReceipt.eventType, "consume");
   assert.equal(consumeReceipt.requestSha256, consumeRequestSha256);
   assert.equal(consumeReceipt.eventSha256, latestState(fixture).registry.events.at(-1).eventSha256);
@@ -872,6 +885,21 @@ function assertEncryptedRejection(result, intent, fixture, expectedCode) {
     assert.equal(metadataBytes.includes(secret), false);
   }
   return receipt;
+}
+
+function assertExactReceiptBytesRejectEquivalentRewrites(bytes, expectedSha256) {
+  const text = bytes.toString("utf8");
+  const original = JSON.parse(text);
+  const rewrites = [
+    Buffer.from(` ${text}`),
+    Buffer.from(text.replace("{\n", "{\n  \"schemaVersion\": 1,\n")),
+    Buffer.from(text.replace("spaceport-deed-corpus-", "\\u0073paceport-deed-corpus-")),
+    Buffer.from(text.replace('"schemaVersion": 1', '"schemaVersion": 1.0')),
+  ];
+  for (const rewritten of rewrites) {
+    assert.deepEqual(JSON.parse(rewritten), original);
+    assert.notEqual(sha256(rewritten), expectedSha256);
+  }
 }
 
 function emptyRegistry() {
