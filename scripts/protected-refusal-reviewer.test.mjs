@@ -32,9 +32,23 @@ test("property canonicalization handles common labels without collapsing segment
     ["block", "Block 02", "2"],
     ["county", "County of Utah", "Utah County"],
     ["county", "Utah Co.", "Utah County"],
+    ["subdivision", "Silver Lake Subdivision Plat One B", "Silver Lake Subd. Plat 1 B"],
+    ["subdivision", "Silver Lake Phase VII", "Silver Lake Phase 7"],
+    ["subdivision", "Silver Lake Unit Twenty One", "Silver Lake Unit 21"],
+    ["lot", "Lot VII", "Lot 7"],
+    ["block", "Block IV", "Block 4"],
+    ["tract", "Tract Twenty One B", "Tract 21 B"],
+    ["parcel", "Parcel Twenty-One B", "Parcel 21 B"],
   ]) assert.equal(canonicalizePropertyIdentifier(field, left), canonicalizePropertyIdentifier(field, right), `${field} variant`);
   assert.notEqual(canonicalizePropertyIdentifier("parcel", "Parcel ID 001-02"),
     canonicalizePropertyIdentifier("parcel", "APN 102"), "segmented and concatenated parcel identifiers can be distinct");
+  assert.notEqual(canonicalizePropertyIdentifier("subdivision", "Silver One Lake"),
+    canonicalizePropertyIdentifier("subdivision", "Silver 1 Lake"), "proper-name number words are not globally rewritten");
+  assert.notEqual(canonicalizePropertyIdentifier("lot", "Lot One Two"),
+    canonicalizePropertyIdentifier("lot", "Lot Twelve"), "segmented number words do not collapse into a different number");
+  for (const [literal, number] of [["I", "1"], ["V", "5"], ["X", "10"]]) assert.notEqual(
+    canonicalizePropertyIdentifier("lot", `Lot ${literal}`), canonicalizePropertyIdentifier("lot", `Lot ${number}`),
+    `literal single-letter Lot ${literal} remains distinct from a numeric lot`);
 });
 
 test("review candidates bind exact source, complete ordered page selector, and expected-code candidate", () => {
@@ -101,6 +115,11 @@ test("two approving systems must agree on source-visible property identity", () 
   assert.equal(reconcilePropertyIdentity({ ...plattedLeft, parcel: "APN 0012:0034:0007" },
     { ...plattedRight, parcel: "12-34-7" }).propertyAliases.filter((alias) => alias.kind === "county-parcel").length, 1,
   "county forms, prefixes, punctuation, subdivision suffixes, and numeric formatting must canonicalize");
+  const spelledPlat = { ...plattedLeft, subdivision: "Silver Lake Subdivision Plat One B", lot: "Lot VII", block: "Block II" };
+  const numericPlat = { ...plattedRight, subdivision: "Silver Lake Subd. Plat 1 B", lot: "Lot 7", block: "Block 2" };
+  assert.deepEqual(reconcilePropertyIdentity(spelledPlat, spelledPlat).propertyAliases,
+    reconcilePropertyIdentity(numericPlat, numericPlat).propertyAliases,
+    "spelled and Roman identifier numerals must produce the same protected aliases");
   const basePlat = reconcilePropertyIdentity(plattedLeft, plattedLeft).propertyAliases;
   const withParcel = reconcilePropertyIdentity({ ...plattedLeft, parcel: "12:34" }, { ...plattedLeft, parcel: "12:34" }).propertyAliases;
   const withTract = reconcilePropertyIdentity({ ...plattedRight, tract: "TRACT A" }, { ...plattedRight, tract: "TRACT A" }).propertyAliases;
@@ -125,6 +144,14 @@ test("two approving systems must agree on source-visible property identity", () 
 test("review index enforces call, session, provider, returned-model, challenge, and property-group uniqueness", () => {
   const challenge = hash("challenge");
   const calls = REVIEW_MODELS.map((model, index) => call(model, index, challenge));
+  const spelledIdentity = { county: "Utah County", recordingInstrument: null,
+    subdivision: "Silver Lake Subdivision Plat One B", lot: "Lot VII", block: "Block II",
+    parcel: null, tract: null, citations: [] };
+  const numericIdentity = { ...spelledIdentity, county: "County of Utah", subdivision: "Silver Lake Subd. Plat 1 B",
+    lot: "Lot 7", block: "Block 2" };
+  const spelledProperty = reconcilePropertyIdentity(spelledIdentity, spelledIdentity);
+  const numericProperty = reconcilePropertyIdentity(numericIdentity, numericIdentity);
+  assert.deepEqual(spelledProperty.propertyAliases, numericProperty.propertyAliases);
   const caseResult = {
     caseId: candidate.caseId, corpusId: candidate.corpusId,
     assignmentEventSha256: candidate.assignmentEventSha256, sourceSha256: candidate.sourceSha256,
@@ -132,10 +159,8 @@ test("review index enforces call, session, provider, returned-model, challenge, 
     expectedFailureCode: "PARSE_UNRESOLVED", assessmentSha256s: [hash("a1"), hash("a2")],
     callReceiptSha256s: calls.map((item) => item.receiptSha256), calls,
     propertyIdentityEvidenceSha256: hash("identity"),
-    propertyAliases: [{ kind: "county-subdivision-block-lot", strength: "strong", sha256: hash("group") }],
-    propertyIdentifierCommitments: [{ field: "block", sha256: hash("block") },
-      { field: "county", sha256: hash("county") }, { field: "lot", sha256: hash("lot") },
-      { field: "subdivision", sha256: hash("subdivision") }],
+    propertyAliases: spelledProperty.propertyAliases,
+    propertyIdentifierCommitments: spelledProperty.propertyIdentifierCommitments,
     propertyAliasReceiptSha256: hash("alias-receipt"),
     status: "approved", critical: 0, major: 0,
   };
@@ -143,9 +168,20 @@ test("review index enforces call, session, provider, returned-model, challenge, 
   const hosted = { verifierPolicyTip: request.verifierPolicyTip, workflowRef: REVIEW_WORKFLOW_REF, runId: "123", runAttempt: "1" };
   const index = buildReviewIndex({ request, challengeSha256: challenge, catalogSha256: hash("catalog"), cases: [caseResult], hosted });
   assert.equal(validateReviewIndex(index, request).cases, 1);
-  const replay = structuredClone(caseResult); replay.caseId = "dp-abcdefabcdef";
+  const replay = nextCase(caseResult, "dp-abcdefabcdef", challenge, 2);
+  replay.propertyAliases = numericProperty.propertyAliases;
+  replay.propertyIdentifierCommitments = numericProperty.propertyIdentifierCommitments;
   assert.throws(() => buildReviewIndex({ request, challengeSha256: challenge, catalogSha256: hash("catalog"),
-    cases: [caseResult, replay], hosted }), /receipt is invalid|independence.*property-group/);
+    cases: [caseResult, replay], hosted }), /alias replay is not unique/,
+  "spelled and numeric identifier forms must not enter the protected index as distinct properties");
+  const conflictingProperty = reconcilePropertyIdentity({ ...numericIdentity, block: "Block III" },
+    { ...numericIdentity, block: "Block 3" });
+  const conflict = nextCase(caseResult, "dp-fedcbafedcba", challenge, 4);
+  conflict.propertyAliases = conflictingProperty.propertyAliases;
+  conflict.propertyIdentifierCommitments = conflictingProperty.propertyIdentifierCommitments;
+  assert.throws(() => buildReviewIndex({ request, challengeSha256: challenge, catalogSha256: hash("catalog"),
+    cases: [caseResult, conflict], hosted }), /conflict requires adjudication: block/,
+  "a shared weak alias with a different block remains an explicit conflict, not an automatic replay or distinct property");
   const sameReturned = structuredClone(caseResult); sameReturned.calls[1].modelReturned = sameReturned.calls[0].modelReturned;
   assert.throws(() => buildReviewIndex({ request, challengeSha256: challenge, catalogSha256: hash("catalog"),
     cases: [sameReturned], hosted }), /receipt is invalid|independence.*property-group/);
@@ -160,8 +196,14 @@ test("protected workflow has no product checkout and retains challenge, OIDC att
     "rm -rf \"$RUNNER_TEMP/deed-refusal-review\""]) assert.match(workflow, new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 });
 
-function call(model, index, challenge) {
-  return sealCallReceipt({ requestId, caseId: candidate.caseId, challengeSha256: challenge,
+function nextCase(base, caseId, challenge, callOffset) {
+  const calls = REVIEW_MODELS.map((model, index) => call(model, callOffset + index, challenge, caseId));
+  return { ...structuredClone(base), caseId, assessmentSha256s: calls.map((_, index) => hash(`assessment-${callOffset + index}`)),
+    callReceiptSha256s: calls.map((item) => item.receiptSha256), calls,
+    propertyIdentityEvidenceSha256: hash(`identity-${caseId}`), propertyAliasReceiptSha256: hash(`alias-${caseId}`) };
+}
+function call(model, index, challenge, caseId = candidate.caseId) {
+  return sealCallReceipt({ requestId, caseId, challengeSha256: challenge,
     modelRequested: model.model, modelVersion: model.version, provider: model.provider,
     modelReturned: `${model.model}-returned`, callId: `call-${index}`, sessionIdSha256: hash(`session-${index}`),
     promptSha256: hash(`prompt-${index}`), schemaSha256: hash("schema"), imageManifestSha256: hash("images"),

@@ -18,6 +18,11 @@ const SHA256 = /^[a-f0-9]{64}$/;
 const GIT_SHA = /^[a-f0-9]{40}$/;
 const CASE_ID = /^dp-[a-f0-9]{12}$/;
 const CORPUS_ID = /^corpus-[a-f0-9]{16}$/;
+const NUMBER_WORDS = new Map(Object.entries({ ZERO: 0, ONE: 1, TWO: 2, THREE: 3, FOUR: 4, FIVE: 5,
+  SIX: 6, SEVEN: 7, EIGHT: 8, NINE: 9, TEN: 10, ELEVEN: 11, TWELVE: 12, THIRTEEN: 13,
+  FOURTEEN: 14, FIFTEEN: 15, SIXTEEN: 16, SEVENTEEN: 17, EIGHTEEN: 18, NINETEEN: 19 }));
+const TENS_WORDS = new Map(Object.entries({ TWENTY: 20, THIRTY: 30, FORTY: 40, FIFTY: 50,
+  SIXTY: 60, SEVENTY: 70, EIGHTY: 80, NINETY: 90 }));
 
 export function sha256(value) { return createHash("sha256").update(value).digest("hex"); }
 export function stableJson(value) {
@@ -308,14 +313,66 @@ export function canonicalizePropertyIdentifier(field, value) {
   let text = normalizeOriginal(value).toUpperCase().replace(/&/g, " AND ");
   if (field === "county") text = text.replace(/^COUNTY\s+OF\s+/, "").replace(/\s+(COUNTY|CO)\.?$/, "");
   if (field === "subdivision") text = text
+    .replace(/\b(SUBDIVISION|SUBDIV|SUBD|SUB)\.?\s+(?=(PLAT|PHASE|UNIT)\b)/g, "")
     .replace(/\b(SUBDIVISION|SUBDIV|SUBD|SUB)\.?\s*(?:(NUMBER|NO\.?)\s*|#\s*)?([0-9]+)\s*$/, "$3")
     .replace(/\b(SUBDIVISION|SUBDIV|SUBD|SUB)\.?$/, "");
   if (field === "lot") text = text.replace(/^\s*(LOT|LT)\.?\s*(NUMBER|NO\.?|#)?\s*/i, "");
   if (field === "block") text = text.replace(/^\s*(BLOCK|BLK)\.?\s*(NUMBER|NO\.?|#)?\s*/i, "");
   if (field === "tract") text = text.replace(/^\s*TRACT\.?\s*(NUMBER|NO\.?|#)?\s*/i, "");
   if (field === "parcel") text = text.replace(/^\s*(PARCEL\s+ID|PARCEL|APN|TAX\s+ID)\.?\s*(NUMBER|NO\.?|#)?\s*/i, "");
-  const pieces = text.replace(/[’']/g, "").match(/[A-Z]+|[0-9]+/g) || [];
+  let pieces = text.replace(/[’']/g, "").match(/[A-Z]+|[0-9]+/g) || [];
+  if (field === "subdivision") pieces = normalizeSubdivisionNumerals(pieces);
+  if (["lot", "block", "tract", "parcel"].includes(field)) pieces = normalizeTypedIdentifierNumerals(pieces);
   return pieces.map((piece) => /^[0-9]+$/.test(piece) ? String(BigInt(piece)) : piece).join("-") || null;
+}
+
+function normalizeSubdivisionNumerals(pieces) {
+  const contexts = new Set(["PLAT", "PHASE", "UNIT"]); const result = [];
+  for (let index = 0; index < pieces.length; index += 1) {
+    const piece = pieces[index]; result.push(piece);
+    if (!contexts.has(piece) || index + 1 >= pieces.length) continue;
+    const numeral = identifierNumeralAt(pieces, index + 1, { allowSingleRoman: true });
+    if (numeral) { result.push(numeral.value); index += numeral.consumed; }
+  }
+  return result;
+}
+
+function normalizeTypedIdentifierNumerals(pieces) {
+  const result = [];
+  for (let index = 0; index < pieces.length; index += 1) {
+    const numeral = identifierNumeralAt(pieces, index, { allowSingleRoman: false });
+    if (numeral) { result.push(numeral.value); index += numeral.consumed - 1; } else result.push(pieces[index]);
+  }
+  return result;
+}
+
+function identifierNumeralAt(pieces, index, { allowSingleRoman }) {
+  const piece = pieces[index];
+  if (TENS_WORDS.has(piece)) {
+    const next = NUMBER_WORDS.get(pieces[index + 1]);
+    return { value: String(TENS_WORDS.get(piece) + (Number.isInteger(next) && next > 0 && next < 10 ? next : 0)),
+      consumed: Number.isInteger(next) && next > 0 && next < 10 ? 2 : 1 };
+  }
+  if (NUMBER_WORDS.has(piece)) return { value: String(NUMBER_WORDS.get(piece)), consumed: 1 };
+  if (/^[IVXLCDM]+$/.test(piece) && (allowSingleRoman || piece.length > 1)) {
+    const value = parseCanonicalRoman(piece); if (value !== null) return { value: String(value), consumed: 1 };
+  }
+  return null;
+}
+
+function parseCanonicalRoman(value) {
+  const numbers = { I: 1, V: 5, X: 10, L: 50, C: 100, D: 500, M: 1000 }; let total = 0;
+  for (let index = 0; index < value.length; index += 1) total += numbers[value[index]] < numbers[value[index + 1]]
+    ? -numbers[value[index]] : numbers[value[index]];
+  return total > 0 && formatRoman(total) === value ? total : null;
+}
+
+function formatRoman(value) {
+  const units = [[1000, "M"], [900, "CM"], [500, "D"], [400, "CD"], [100, "C"], [90, "XC"],
+    [50, "L"], [40, "XL"], [10, "X"], [9, "IX"], [5, "V"], [4, "IV"], [1, "I"]];
+  let remaining = value; let result = "";
+  for (const [number, roman] of units) while (remaining >= number) { result += roman; remaining -= number; }
+  return result;
 }
 
 function canonicalPropertyIdentity(identity) {
