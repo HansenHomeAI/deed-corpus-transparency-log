@@ -34,6 +34,17 @@
       "issuedAt": "2026-07-16T06:49:16.799Z",
       "workflowRunId": "29477856078",
       "envelopeSha256": "aa053877c8a6a56778ef23e721472c40a257c5a8a6c1b61553c98aafe86843bd"
+    },
+    {
+      "sequence": 4,
+      "previousEnvelopeSha256": "aa053877c8a6a56778ef23e721472c40a257c5a8a6c1b61553c98aafe86843bd",
+      "ciphertextSha256": "3b71a345214822811e6543ebec0532aa5c8fdad0c9c8c491204432f2b8631626",
+      "ciphertextBytes": 30116,
+      "algorithm": "AES-256-GCM",
+      "keyId": "deed-registry-state-20260715-v1",
+      "issuedAt": "2026-07-16T06:54:10.214Z",
+      "workflowRunId": "29478117009",
+      "envelopeSha256": "6c19d69f80697044844e92fc3a89445ddea2828e119dc6d04413eb6e4c8fd494"
     }
   ]
 }
