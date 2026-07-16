@@ -191,7 +191,12 @@ workflow does not change or recommit the public index or encrypted state. It
 still attests and uploads a request-addressed, caller-encrypted rejection
 receipt. Only the holder of that request's ephemeral response key can read the
 exact validator errors and current registry prefix; public logs and receipt
-metadata disclose only opaque commitments and the `rejected` outcome. This
+metadata disclose only opaque commitments and the `rejected` outcome. Rejected
+receipts use an authenticated, registry-size-derived fixed padding class so
+different error codes and counts at the same protected prefix have identical
+encrypted sizes. After attesting and uploading that receipt, the workflow
+concludes as failed; an Actions `success` therefore continues to mean that an
+append was actually committed. This
 lets a custodian repair a conflicting cohort without weakening the protected
 validator or exposing private corpus identities.
 

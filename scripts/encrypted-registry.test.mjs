@@ -54,6 +54,37 @@ test("registry workflows refuse non-main or stale refs before loading protected 
     assert.match(workflow, /test "\$GITHUB_REF" = refs\/heads\/main/);
     assert.match(workflow, /test "\$\(git rev-parse FETCH_HEAD\)" = "\$GITHUB_SHA"/);
   }
+  const upload = appendWorkflow.indexOf("Upload replay-addressed encrypted receipt artifact");
+  const rejection = appendWorkflow.indexOf("Fail the append after retaining its encrypted rejection receipt");
+  const cleanup = appendWorkflow.indexOf("Remove secret key material");
+  assert.ok(upload >= 0 && rejection > upload && cleanup > rejection);
+  assert.match(appendWorkflow, /if: steps\.append\.outputs\.appended == 'false'[\s\S]*?exit 1/);
+  assert.match(appendWorkflow, /name: Remove secret key material\n\s+if: always\(\)/);
+});
+
+test("same-prefix semantic rejection diagnostics have an indistinguishable fixed encrypted size", () => {
+  const build = (kind) => {
+    const fixture = createFixture();
+    const first = assignmentBody(0);
+    assert.equal(append(fixture, intentFor(fixture, first), "7101").status, 0);
+    const current = latestState(fixture).registry.events.at(-1);
+    const body = kind === "invalid"
+      ? assignmentBody(1, { custodyMode: "untrusted" })
+      : assignmentBody(1, { sourceSha256: current.payload.sourceSha256 });
+    const intent = intentFor(fixture, body);
+    const result = append(fixture, intent, kind === "invalid" ? "7102" : "7103");
+    assertEncryptedRejection(result, intent, fixture,
+      kind === "invalid" ? "REGISTRY_ASSIGN_INVALID" : "REGISTRY_CROSS_CORPUS_REUSE");
+    return readFileSync(join(result.receiptDirectory, "receipt.encrypted.json"));
+  };
+  const invalid = build("invalid");
+  const duplicate = build("duplicate");
+  assert.equal(invalid.length, duplicate.length);
+  assert.ok(invalid.length > 1024 * 1024);
+  for (const code of ["REGISTRY_ASSIGN_INVALID", "REGISTRY_CROSS_CORPUS_REUSE"]) {
+    assert.equal(invalid.includes(Buffer.from(code)), false);
+    assert.equal(duplicate.includes(Buffer.from(code)), false);
+  }
 });
 
 test("encrypted genesis preserves the complete detailed private registry and frozen public anchor prefix", () => {

@@ -167,6 +167,12 @@ jobs:
           retention-days: 1
           compression-level: 0
 
+      - name: Fail the append after retaining its encrypted rejection receipt
+        if: steps.append.outputs.appended == 'false'
+        run: |
+          echo "Protected semantic append rejected; inspect the attested caller-encrypted receipt." >&2
+          exit 1
+
       - name: Attest the exact public index and every retained ciphertext
         if: steps.append.outputs.appended == 'true'
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
