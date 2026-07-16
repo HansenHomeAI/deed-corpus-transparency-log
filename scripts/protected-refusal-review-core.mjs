@@ -75,13 +75,17 @@ export function validateReviewRequest(review, { requestId, root = null } = {}) {
     exactKeys(item, ["caseId", "corpusId", "assignmentEventSha256", "sourceSha256", "sourceBytes",
       "sourcePath", "selector", "selectorSha256", "expectedFailureCandidate", "expectedFailureCandidateSha256"],
     `review case ${item?.caseId || "unknown"}`);
-    exactKeys(item.selector, ["pages"], "source selector");
+    exactKeys(item.selector, ["pages", "tractIds", "cropReceiptSha256"], "source selector");
     exactKeys(item.expectedFailureCandidate, ["code", "statement"], "expected-failure candidate");
     const pages = item.selector?.pages;
     if (!CASE_ID.test(item.caseId || "") || ids.has(item.caseId) || !CORPUS_ID.test(item.corpusId || "")
       || !SHA256.test(item.assignmentEventSha256 || "") || !SHA256.test(item.sourceSha256 || "")
       || !Number.isInteger(item.sourceBytes) || item.sourceBytes < 1 || item.sourcePath !== `sources/${item.caseId}.pdf`
       || !Array.isArray(pages) || pages.length < 1 || pages.some((page, i) => page !== i + 1)
+      || !Array.isArray(item.selector.tractIds) || item.selector.tractIds.length < 1
+      || new Set(item.selector.tractIds).size !== item.selector.tractIds.length
+      || item.selector.tractIds.some((tract) => typeof tract !== "string" || !tract)
+      || !SHA256.test(item.selector.cropReceiptSha256 || "")
       || item.selectorSha256 !== sha256(stableJson(item.selector))
       || !REFUSAL_CODES.includes(item.expectedFailureCandidate?.code)
       || typeof item.expectedFailureCandidate?.statement !== "string" || item.expectedFailureCandidate.statement.length < 1

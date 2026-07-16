@@ -11,8 +11,9 @@ const requestId = hash("request");
 const candidate = {
   caseId: "dp-0123456789ab", corpusId: "corpus-0123456789abcdef",
   assignmentEventSha256: hash("assignment"), sourceSha256: hash("source"), sourceBytes: 100,
-  sourcePath: "sources/dp-0123456789ab.pdf", selector: { pages: [1, 2] },
-  selectorSha256: hashJson({ pages: [1, 2] }),
+  sourcePath: "sources/dp-0123456789ab.pdf", selector: { pages: [1, 2], tractIds: ["legal-description"],
+    cropReceiptSha256: hash("crop") },
+  selectorSha256: hashJson({ pages: [1, 2], tractIds: ["legal-description"], cropReceiptSha256: hash("crop") }),
   expectedFailureCandidate: { code: "PARSE_UNRESOLVED", statement: "A referenced exhibit is absent." },
 };
 candidate.expectedFailureCandidateSha256 = hashJson(candidate.expectedFailureCandidate);
@@ -21,7 +22,8 @@ test("review candidates bind exact source, complete ordered page selector, and e
   const review = { schemaVersion: 1, kind: "spaceport-refusal-truth-review-candidates", requestId,
     campaign: "deed-plotting-50-real", cases: [candidate] };
   assert.equal(validateReviewRequest(review, { requestId }).cases.length, 1);
-  assert.throws(() => validateReviewRequest({ ...review, cases: [{ ...candidate, selector: { pages: [1, 3] } }] }, { requestId }),
+  assert.throws(() => validateReviewRequest({ ...review, cases: [{ ...candidate, selector: {
+    ...candidate.selector, pages: [1, 3] } }] }, { requestId }),
     /source, selector, or expected-code binding/);
   assert.throws(() => validateReviewRequest({ ...review, cases: [{ ...candidate, expectedFailureCandidate: {
     ...candidate.expectedFailureCandidate, code: "DOD_FAIL" } }] }, { requestId }), /source, selector, or expected-code binding/);
