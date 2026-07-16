@@ -92,7 +92,7 @@ try {
   mkdirSync(receiptDirectory, { recursive: true, mode: 0o700 });
   writeFileSync(`${receiptDirectory}/receipt.encrypted.json`, protectedReceipt.bytes, { flag: "wx", mode: 0o600 });
   writeFileSync(`${receiptDirectory}/receipt-metadata.json`, `${JSON.stringify(metadata, null, 2)}\n`, { flag: "wx", mode: 0o600 });
-  process.stdout.write(`${JSON.stringify({
+  await writeStdout(`${JSON.stringify({
     ok: false,
     appended: false,
     sequence: currentEnvelope.sequence,
@@ -174,3 +174,6 @@ function argument(name) {
   return process.argv[index + 1];
 }
 function optionalArgument(name) { const index = process.argv.indexOf(name); return index < 0 ? null : process.argv[index + 1]; }
+function writeStdout(value) {
+  return new Promise((resolve, reject) => process.stdout.write(value, (error) => error ? reject(error) : resolve()));
+}
