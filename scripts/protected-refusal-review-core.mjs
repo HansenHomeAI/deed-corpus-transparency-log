@@ -23,6 +23,7 @@ const NUMBER_WORDS = new Map(Object.entries({ ZERO: 0, ONE: 1, TWO: 2, THREE: 3,
   FOURTEEN: 14, FIFTEEN: 15, SIXTEEN: 16, SEVENTEEN: 17, EIGHTEEN: 18, NINETEEN: 19 }));
 const TENS_WORDS = new Map(Object.entries({ TWENTY: 20, THIRTY: 30, FORTY: 40, FIFTY: 50,
   SIXTY: 60, SEVENTY: 70, EIGHTY: 80, NINETY: 90 }));
+const NAME_APOSTROPHE_JOINERS = /['`\u00b4\u02b9\u02bb\u02bc\u02ca\u02cb\u2018\u2019\u201a\u201b\u2032\uff07\uff40]/gu;
 
 export function sha256(value) { return createHash("sha256").update(value).digest("hex"); }
 export function stableJson(value) {
@@ -310,10 +311,11 @@ export function buildPropertyIdentifierCommitments(identity) {
 }
 
 export function canonicalizePropertyIdentifier(field, value) {
-  let text = foldCanonicalLatin(normalizeOriginal(value)).toUpperCase().replace(/&/g, " AND ");
+  let text = foldCanonicalLatin(normalizeOriginal(value), { dropNameJoiners: ["county", "subdivision"].includes(field) })
+    .toUpperCase().replace(/&/g, " AND ");
   // Semantic labels are punctuation-insensitive, while replacing punctuation with spaces preserves the
   // component boundaries later used to distinguish 1-2 from 12 and AB-CD from ABCD.
-  text = text.replace(/[’']/g, "").replace(/[\p{P}\p{S}]+/gu, " ").trim().replace(/\s+/g, " ");
+  text = text.replace(/[\p{P}\p{S}]+/gu, " ").trim().replace(/\s+/g, " ");
   if (field === "county") text = text.replace(/^COUNTY\s+OF\s+/, "").replace(/\s+(COUNTY|CO)$/, "");
   if (field === "subdivision") text = text
     .replace(/\b(SUBDIVISION|SUBDIV|SUBD|SUB)\s+(?=(PLAT|PHASE|UNIT)\b)/g, "")
@@ -364,11 +366,12 @@ function identifierNumeralAt(pieces, index, { allowRoman, allowSingleRoman }) {
   return null;
 }
 
-function foldCanonicalLatin(value) {
+function foldCanonicalLatin(value, { dropNameJoiners }) {
   const nondecomposing = new Map([["Æ", "AE"], ["æ", "ae"], ["Œ", "OE"], ["œ", "oe"], ["Ø", "O"], ["ø", "o"],
     ["Ł", "L"], ["ł", "l"], ["Đ", "D"], ["đ", "d"], ["Ð", "D"], ["ð", "d"], ["Þ", "TH"], ["þ", "th"],
     ["ı", "i"], ["ß", "ss"], ["Ŧ", "T"], ["ŧ", "t"]]);
-  return [...value.replace(/[\u02bb\u02bc]/giu, "").normalize("NFKD").replace(/\p{M}+/gu, "")]
+  const joined = dropNameJoiners ? value.replace(NAME_APOSTROPHE_JOINERS, "") : value;
+  return [...joined.normalize("NFKD").replace(/\p{M}+/gu, "")]
     .map((character) => nondecomposing.get(character) || character).join("");
 }
 
@@ -492,7 +495,7 @@ export function validateReviewIndex(index, request) {
   return { reviewIndexSha256: sha256(`${JSON.stringify(index, null, 2)}\n`), cases: index.cases.length };
 }
 
-function normalizeOriginal(value) { return value.normalize("NFKC").trim().replace(/\s+/g, " "); }
+function normalizeOriginal(value) { return value.trim().replace(/\s+/g, " "); }
 function stringArray(value) { return Array.isArray(value) && value.length > 0 && value.length <= 100
   && value.every((item) => typeof item === "string" && item.trim() && item.length <= 2000); }
 function hashArray(value) { return Array.isArray(value) && value.length > 0 && new Set(value).size === value.length

@@ -48,6 +48,10 @@ test("property canonicalization handles common labels without collapsing segment
     ["block", "Block—2", "Block 2"],
     ["parcel", "Parcel ID：001-02；", "APN 1-2"],
   ]) assert.equal(canonicalizePropertyIdentifier(field, left), canonicalizePropertyIdentifier(field, right), `${field} variant`);
+  for (const joiner of ["'", "`", "´", "ʹ", "ʻ", "ʼ", "ˊ", "ˋ", "‘", "’", "‚", "‛", "′", "＇", "｀"]) {
+    assert.equal(canonicalizePropertyIdentifier("county", `Hawai${joiner}i County`),
+      canonicalizePropertyIdentifier("county", "Hawaii County"), `Hawaii name joiner ${joiner}`);
+  }
   assert.notEqual(canonicalizePropertyIdentifier("parcel", "Parcel ID 001-02"),
     canonicalizePropertyIdentifier("parcel", "APN 102"), "segmented and concatenated parcel identifiers can be distinct");
   assert.notEqual(canonicalizePropertyIdentifier("parcel", "Parcel 1:2"),
@@ -64,6 +68,10 @@ test("property canonicalization handles common labels without collapsing segment
     canonicalizePropertyIdentifier("lot", "Lot 7-A"), "multi-segment lot identifiers do not reinterpret Roman-looking components");
   assert.notEqual(canonicalizePropertyIdentifier("county", "Dona Ana County"),
     canonicalizePropertyIdentifier("county", "Donna Ana County"), "Latin folding does not collapse distinct spelling");
+  assert.notEqual(canonicalizePropertyIdentifier("county", "Hawai i County"),
+    canonicalizePropertyIdentifier("county", "Hawaii County"), "ordinary name spaces are not deleted as joiners");
+  assert.notEqual(canonicalizePropertyIdentifier("parcel", "Parcel AB'CD"),
+    canonicalizePropertyIdentifier("parcel", "Parcel ABCD"), "apostrophes remain component boundaries in typed identifiers");
   assert.notEqual(canonicalizePropertyIdentifier("subdivision", "Silver One Lake"),
     canonicalizePropertyIdentifier("subdivision", "Silver 1 Lake"), "proper-name number words are not globally rewritten");
   assert.notEqual(canonicalizePropertyIdentifier("lot", "Lot One Two"),
@@ -211,12 +219,12 @@ test("review index enforces call, session, provider, returned-model, challenge, 
   assert.throws(() => buildReviewIndex({ request, challengeSha256: challenge, catalogSha256: hash("catalog"),
     cases: [punctuationBase, punctuationReplay], hosted }), /alias replay is not unique/,
   "ordinary and Unicode surrounding punctuation must not bypass duplicate-index rejection");
-  const accentedProperty = reconcilePropertyIdentity({ ...numericIdentity, county: "Doña Ana County",
+  const accentedProperty = reconcilePropertyIdentity({ ...numericIdentity, county: "Hawai‘i County",
     subdivision: "Sunset Subdivision", lot: "Lot 7", block: "Block 2" },
-  { ...numericIdentity, county: "Doña Ana County", subdivision: "Sunset Subdivision", lot: "Lot 7", block: "Block 2" });
-  const asciiProperty = reconcilePropertyIdentity({ ...numericIdentity, county: "Dona Ana County",
+  { ...numericIdentity, county: "Hawai‘i County", subdivision: "Sunset Subdivision", lot: "Lot 7", block: "Block 2" });
+  const asciiProperty = reconcilePropertyIdentity({ ...numericIdentity, county: "Hawaii County",
     subdivision: "Sunset Subdivision", lot: "Lot 7", block: "Block 2" },
-  { ...numericIdentity, county: "Dona Ana County", subdivision: "Sunset Subdivision", lot: "Lot 7", block: "Block 2" });
+  { ...numericIdentity, county: "Hawaii County", subdivision: "Sunset Subdivision", lot: "Lot 7", block: "Block 2" });
   const accentBase = { ...structuredClone(caseResult), propertyAliases: accentedProperty.propertyAliases,
     propertyIdentifierCommitments: accentedProperty.propertyIdentifierCommitments };
   const accentReplay = nextCase(accentBase, "dp-cccccccccccc", challenge, 8);
@@ -224,7 +232,7 @@ test("review index enforces call, session, provider, returned-model, challenge, 
   accentReplay.propertyIdentifierCommitments = asciiProperty.propertyIdentifierCommitments;
   assert.throws(() => buildReviewIndex({ request, challengeSha256: challenge, catalogSha256: hash("catalog"),
     cases: [accentBase, accentReplay], hosted }), /alias replay is not unique/,
-  "official accented and ASCII county forms must not bypass duplicate-index rejection");
+  "official apostrophe-joiner and ASCII county forms must not bypass duplicate-index rejection");
   const slashParcel = reconcilePropertyIdentity({ ...numericIdentity, subdivision: null, lot: null, block: null,
     county: "Utah County", parcel: "Parcel AB/CD" }, { ...numericIdentity, subdivision: null, lot: null, block: null,
     county: "Utah County", parcel: "Parcel AB/CD" });
