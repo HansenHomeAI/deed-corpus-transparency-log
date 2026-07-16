@@ -16,9 +16,9 @@ if (!/^[a-f0-9]{40}$/.test(expectedSignerDigest)) throw new Error("Expected appe
 
 const bytes = readFileSync(input);
 verifyAttestation(bytes, input, bundlePath, expectedSignerDigest);
-const receipt = decryptProtectedAppendReceipt(bytes, readFileSync(privateKeyPath, "utf8"), keyId,
-  { expectedRequestSha256, expectedCiphertextSha256, expectedSignerDigest });
-writeFileSync(output, `${JSON.stringify(receipt, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+const { receipt, receiptBytes } = decryptProtectedAppendReceipt(bytes, readFileSync(privateKeyPath, "utf8"), keyId,
+  { expectedRequestSha256, expectedCiphertextSha256, expectedSignerDigest, returnReceiptBytes: true });
+writeFileSync(output, receiptBytes, { flag: "wx", mode: 0o600 });
 const appended = receipt.kind === "spaceport-deed-corpus-protected-append-receipt";
 process.stdout.write(`${JSON.stringify({
   ok: appended,
