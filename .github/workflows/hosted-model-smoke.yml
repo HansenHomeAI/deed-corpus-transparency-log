@@ -1,0 +1,135 @@
+name: Hosted 80-image deed model smoke
+run-name: deed-model-smoke-${{ github.sha }}-${{ github.run_id }}
+
+on:
+  workflow_dispatch:
+
+permissions:
+  artifact-metadata: write
+  attestations: write
+  contents: read
+  id-token: write
+  models: read
+
+concurrency:
+  group: deed-model-smoke
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    environment: deed-corpus-evaluator
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      SPACEPORT_RUNNER_ENVIRONMENT: github-hosted
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Refuse any unprotected or stale workflow ref
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/main
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git fetch --quiet origin refs/heads/main
+          test "$(git rev-parse FETCH_HEAD)" = "$GITHUB_SHA"
+
+      - name: Execute and validate the maximum-cardinality multimodal call
+        env:
+          MODEL_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/deed-model-smoke"
+          evidence="$root/evidence"
+          bin="$root/bin"
+          umask 077
+          mkdir -p "$evidence" "$bin"
+          install -m 0700 scripts/codex-models-shim.mjs "$bin/codex"
+          install -m 0600 scripts/model-receipt.mjs scripts/model-broker-contract.mjs "$bin/"
+          printf '%s' "$MODEL_TOKEN" > "$root/model-token"
+          unset MODEL_TOKEN GITHUB_TOKEN ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL
+          env -i HOME="$HOME" PATH="$PATH" node scripts/github-models-broker.mjs \
+            --token-file "$root/model-token" \
+            --config "$bin/.spaceport-model-broker.json" \
+            --receipts "$evidence/model-receipts.jsonl" \
+            --model openai/gpt-4.1 --model-version 2025-04-14 \
+            > "$root/broker.log" 2>&1 &
+          broker_pid="$!"
+          echo "$broker_pid" > "$root/broker.pid"
+          trap 'kill "$broker_pid" 2>/dev/null || true; wait "$broker_pid" 2>/dev/null || true' EXIT
+          for attempt in {1..100}; do
+            test -f "$bin/.spaceport-model-broker.json" && break
+            sleep 0.1
+          done
+          test -f "$bin/.spaceport-model-broker.json"
+          python3 - "$evidence" <<'PY'
+          import random, sys
+          from pathlib import Path
+          root = Path(sys.argv[1])
+          width = height = 64
+          for index in range(80):
+              pixels = random.Random(index).randbytes(width * height * 3)
+              (root / f"smoke-{index:02d}.ppm").write_bytes(f"P6\n{width} {height}\n255\n".encode() + pixels)
+          PY
+          images=()
+          for ppm in "$evidence"/*.ppm; do
+            png="${ppm%.ppm}.png"
+            sips -s format png "$ppm" --out "$png" >/dev/null
+            rm -f "$ppm"
+            images+=(--image "$png")
+          done
+          node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({type:"object",additionalProperties:false,required:["ok"],properties:{ok:{type:"boolean",const:true}}}))' "$evidence/schema.json"
+          PATH="$bin:$PATH" printf '%s\n' 'Synthetic eighty-image maximum-cardinality multimodal smoke. Return {"ok":true}.' | \
+            PATH="$bin:$PATH" codex exec --ephemeral --ignore-rules --sandbox read-only --skip-git-repo-check \
+              --output-schema "$evidence/schema.json" --output-last-message "$evidence/result.json" \
+              "${images[@]}"
+          node scripts/validate-hosted-model-smoke.mjs --root "$evidence" --out "$root/smoke-index.json"
+          kill "$broker_pid"
+          wait "$broker_pid" || true
+          trap - EXIT
+
+      - name: Attest the exact smoke evidence index
+        id: attest
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-path: ${{ runner.temp }}/deed-model-smoke/smoke-index.json
+          show-summary: false
+
+      - name: Retain and reverify the Sigstore bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/deed-model-smoke"
+          cp '${{ steps.attest.outputs.bundle-path }}' "$root/smoke-index.sigstore.json"
+          gh attestation verify "$root/smoke-index.json" \
+            --repo HansenHomeAI/deed-corpus-transparency-log \
+            --signer-workflow HansenHomeAI/deed-corpus-transparency-log/.github/workflows/hosted-model-smoke.yml \
+            --signer-digest "$GITHUB_SHA" --source-ref refs/heads/main \
+            --cert-oidc-issuer https://token.actions.githubusercontent.com \
+            --deny-self-hosted-runners --bundle "$root/smoke-index.sigstore.json" --format json \
+            > "$root/attestation-verification.json"
+
+      - name: Upload synthetic smoke evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: deed-model-smoke-${{ github.sha }}-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/deed-model-smoke/evidence
+            ${{ runner.temp }}/deed-model-smoke/smoke-index.json
+            ${{ runner.temp }}/deed-model-smoke/smoke-index.sigstore.json
+            ${{ runner.temp }}/deed-model-smoke/attestation-verification.json
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+      - name: Remove all broker and synthetic material
+        if: always()
+        run: |
+          set +e
+          root="$RUNNER_TEMP/deed-model-smoke"
+          test -f "$root/broker.pid" && kill "$(cat "$root/broker.pid")" 2>/dev/null
+          rm -rf "$root"
