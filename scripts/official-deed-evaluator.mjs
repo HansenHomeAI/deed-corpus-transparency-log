@@ -5,6 +5,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
   createFileSet,
   encryptBundle,
+  INPUT_RELEASE_REPOSITORY,
   sha256,
   stableJson,
   validateEvaluationRequest,
@@ -37,8 +38,8 @@ if (command === "write-request") {
   const expectedTag = `deed-evaluator-input-${request.requestId}`;
   const source = (release.assets || []).find((asset) => String(asset.id) === String(request.sourceAssetId));
   const truth = (release.assets || []).find((asset) => String(asset.id) === String(request.truthAssetId));
-  if (String(release.id) !== String(request.inputReleaseId) || release.tag_name !== expectedTag || release.draft !== true
-    || release.prerelease !== false || release.target_commitish !== request.productCodeTip
+  if (String(release.id) !== String(request.inputReleaseId) || release.tag_name !== expectedTag || release.name !== expectedTag
+    || release.draft !== true || release.prerelease !== false || release.target_commitish !== request.verifierPolicyTip
     || !Array.isArray(release.assets) || release.assets.length !== 2
     || !assetOk(source, "source.bundle", expectedTag) || !assetOk(truth, "truth.bundle", expectedTag)) {
     throw new Error("Encrypted input release or asset provenance is invalid.");
@@ -157,8 +158,8 @@ function verifyMaterializedRole(root, role, requestId, expectedPaths) {
 function assetOk(asset, name, tag) {
   return asset?.name === name && asset.state === "uploaded" && asset.content_type === "application/octet-stream"
     && Number.isInteger(asset.size) && asset.size > 8
-    && asset.url === `https://api.github.com/repos/HansenHomeAI/Autodesk-automation/releases/assets/${asset.id}`
-    && asset.browser_download_url === `https://github.com/HansenHomeAI/Autodesk-automation/releases/download/${tag}/${name}`;
+    && asset.url === `https://api.github.com/repos/${INPUT_RELEASE_REPOSITORY}/releases/assets/${asset.id}`
+    && asset.browser_download_url === `https://github.com/${INPUT_RELEASE_REPOSITORY}/releases/download/${tag}/${name}`;
 }
 function argument(name) { const index = process.argv.indexOf(name); if (index < 0 || !process.argv[index + 1]) throw new Error(`missing ${name}`); return process.argv[index + 1]; }
 function requiredEnv(name) { if (!process.env[name]) throw new Error(`missing ${name}`); return process.env[name]; }

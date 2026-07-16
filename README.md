@@ -251,16 +251,18 @@ Input PDFs and truth never enter workflow inputs, Git, logs, or plaintext
 artifacts. Create separate `source` and `truth` file sets with
 `scripts/deed-bundle.mjs`, encrypt both to the evaluator bundle public key, and
 embed the same random 32-byte request id in each. Stage the two ciphertexts as
-`source.bundle` and `truth.bundle` on a draft release in the private
-`HansenHomeAI/Autodesk-automation` repository. The exact tag must be
+`source.bundle` and `truth.bundle` on a transient draft release in this
+protected public repository. Draft assets remain inaccessible to anonymous
+users and contain authenticated ciphertext only. The exact tag and release
+name must both be
 `deed-evaluator-input-<request-id>` and its target commit must be the frozen
-product SHA. Pass the release id, two distinct asset ids, and ciphertext hashes
-to the official evaluator. It reads the private draft release with a separate
-fine-grained read-only token, validates the tag/target/name/id/content type and
-hash of each asset, and never extracts an archive. The local dispatcher owns a
-`finally` cleanup that deletes the transient private release after the hosted
-run, including on evaluation failure; the public evaluator deliberately lacks
-permission to mutate the private repository.
+protected verifier-policy SHA. Pass the release id, two distinct asset ids,
+and ciphertext hashes to the official evaluator. It reads the same-repository
+draft release with its scoped `contents: read` Actions token, validates the
+tag/target/name/id/content type and hash of each asset, and never extracts an
+archive. The local dispatcher owns a `finally` cleanup that deletes the
+transient release after the hosted run, including on evaluation failure; the
+evaluator itself has no contents-write permission.
 
 Inside the encrypted source file set, the manifest is always named
 `private-manifest.json` at the file-set root; a final cohort also carries its

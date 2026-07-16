@@ -14,6 +14,7 @@ export const OFFICIAL_REPOSITORY = "HansenHomeAI/deed-corpus-transparency-log";
 export const OFFICIAL_WORKFLOW = ".github/workflows/official-deed-evaluator.yml";
 export const OFFICIAL_WORKFLOW_REF = `${OFFICIAL_REPOSITORY}/${OFFICIAL_WORKFLOW}@refs/heads/main`;
 export const PRODUCT_REPOSITORY = "HansenHomeAI/Autodesk-automation";
+export const INPUT_RELEASE_REPOSITORY = OFFICIAL_REPOSITORY;
 export const BUNDLE_ALGORITHM = "RSA-OAEP-256+A256GCM";
 export const BUNDLE_MAGIC = Buffer.from("DCB1");
 export const BUNDLE_SCHEMA_VERSION = 1;

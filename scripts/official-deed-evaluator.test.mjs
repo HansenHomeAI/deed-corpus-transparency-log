@@ -211,22 +211,22 @@ test("source verification proves all truth paths absent, then truth verification
   assert.notEqual(child.status, 0);
 });
 
-test("private draft input release binds exact request tag, product target, asset ids, names, and repository", () => {
+test("scoped draft input release binds exact request tag, verifier target, asset ids, names, and repository", () => {
   const root = mkdtempSync(join(tmpdir(), "deed-release-provenance-"));
   const requestPath = join(root, "request.json"); writeFileSync(requestPath, JSON.stringify(request));
   const tag = `deed-evaluator-input-${request.requestId}`;
   const asset = (id, name) => ({
     id: Number(id), name, state: "uploaded", content_type: "application/octet-stream", size: 100,
-    url: `https://api.github.com/repos/HansenHomeAI/Autodesk-automation/releases/assets/${id}`,
-    browser_download_url: `https://github.com/HansenHomeAI/Autodesk-automation/releases/download/${tag}/${name}`,
+    url: `https://api.github.com/repos/HansenHomeAI/deed-corpus-transparency-log/releases/assets/${id}`,
+    browser_download_url: `https://github.com/HansenHomeAI/deed-corpus-transparency-log/releases/download/${tag}/${name}`,
   });
-  const exact = { id: Number(request.inputReleaseId), tag_name: tag, draft: true, prerelease: false,
-    target_commitish: request.productCodeTip, assets: [asset(request.sourceAssetId, "source.bundle"), asset(request.truthAssetId, "truth.bundle")] };
+  const exact = { id: Number(request.inputReleaseId), tag_name: tag, name: tag, draft: true, prerelease: false,
+    target_commitish: request.verifierPolicyTip, assets: [asset(request.sourceAssetId, "source.bundle"), asset(request.truthAssetId, "truth.bundle")] };
   const releasePath = join(root, "release.json"); writeFileSync(releasePath, JSON.stringify(exact));
   let child = spawnEvaluator(["verify-input-release", "--request", requestPath, "--release", releasePath]);
   assert.equal(child.status, 0, child.stderr);
   for (const mutation of [
-    { tag_name: "replay" }, { draft: false }, { target_commitish: "f".repeat(40) },
+    { tag_name: "replay" }, { name: "replay" }, { draft: false }, { target_commitish: "f".repeat(40) },
     { assets: [asset(request.sourceAssetId, "source.bundle"), asset(request.truthAssetId, "source.bundle")] },
   ]) {
     writeFileSync(releasePath, JSON.stringify({ ...exact, ...mutation }));
@@ -258,8 +258,9 @@ test("workflow statically enforces hosted ordering, credential isolation, pinned
   assert.match(workflow, /--model-version 2025-04-14/);
   assert.match(workflow, /Synthetic eighty-image maximum-cardinality multimodal smoke/);
   assert.match(workflow, /test -s "\$smoke\/result\.json\.model-receipt\.json"/);
-  assert.match(workflow, /GH_TOKEN: \$\{\{ secrets\.DEED_PRODUCT_READONLY_TOKEN \}\}/);
-  assert.match(workflow, /repos\/HansenHomeAI\/Autodesk-automation\/releases\/\$INPUT_RELEASE_ID/);
+  assert.match(workflow, /GH_TOKEN: \$\{\{ github\.token \}\}/);
+  assert.doesNotMatch(workflow, /DEED_PRODUCT_READONLY_TOKEN/);
+  assert.match(workflow, /repos\/HansenHomeAI\/deed-corpus-transparency-log\/releases\/\$INPUT_RELEASE_ID/);
   assert.match(workflow, /releases\/assets\/\$SOURCE_ASSET_ID/);
   assert.match(workflow, /releases\/assets\/\$TRUTH_ASSET_ID/);
   assert.match(workflow, /--resume-stage seal-only/);

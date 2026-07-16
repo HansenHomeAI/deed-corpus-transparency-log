@@ -28,11 +28,11 @@ on:
         required: true
         type: string
       input_release_id:
-        description: Exact private Autodesk-automation draft release containing the encrypted inputs
+        description: Exact same-repository draft release containing only encrypted inputs
         required: true
         type: string
       source_asset_id:
-        description: Exact source.bundle asset id on the private draft release
+        description: Exact source.bundle asset id on the scoped draft release
         required: true
         type: string
       source_bundle_sha256:
@@ -40,7 +40,7 @@ on:
         required: true
         type: string
       truth_asset_id:
-        description: Distinct truth.bundle asset id on the same private draft release
+        description: Distinct truth.bundle asset id on the same scoped draft release
         required: true
         type: string
       truth_bundle_sha256:
@@ -111,9 +111,9 @@ jobs:
           node scripts/official-deed-evaluator.mjs write-request \
             --out "$RUNNER_TEMP/deed-evaluator/request.json"
 
-      - name: Verify private draft-release provenance and download ciphertext assets only
+      - name: Verify scoped draft-release provenance and download ciphertext assets only
         env:
-          GH_TOKEN: ${{ secrets.DEED_PRODUCT_READONLY_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           INPUT_RELEASE_ID: ${{ inputs.input_release_id }}
           SOURCE_ASSET_ID: ${{ inputs.source_asset_id }}
           TRUTH_ASSET_ID: ${{ inputs.truth_asset_id }}
@@ -122,13 +122,13 @@ jobs:
         run: |
           set -euo pipefail
           root="$RUNNER_TEMP/deed-evaluator"
-          gh api "repos/HansenHomeAI/Autodesk-automation/releases/$INPUT_RELEASE_ID" > "$root/input-release.json"
+          gh api "repos/HansenHomeAI/deed-corpus-transparency-log/releases/$INPUT_RELEASE_ID" > "$root/input-release.json"
           node scripts/official-deed-evaluator.mjs verify-input-release \
             --request "$root/request.json" --release "$root/input-release.json"
           gh api -H "Accept: application/octet-stream" \
-            "repos/HansenHomeAI/Autodesk-automation/releases/assets/$SOURCE_ASSET_ID" > "$root/source.bundle"
+            "repos/HansenHomeAI/deed-corpus-transparency-log/releases/assets/$SOURCE_ASSET_ID" > "$root/source.bundle"
           gh api -H "Accept: application/octet-stream" \
-            "repos/HansenHomeAI/Autodesk-automation/releases/assets/$TRUTH_ASSET_ID" > "$root/truth.bundle"
+            "repos/HansenHomeAI/deed-corpus-transparency-log/releases/assets/$TRUTH_ASSET_ID" > "$root/truth.bundle"
           source_size="$(jq -er --argjson id "$SOURCE_ASSET_ID" '.assets[] | select(.id == $id) | .size' "$root/input-release.json")"
           truth_size="$(jq -er --argjson id "$TRUTH_ASSET_ID" '.assets[] | select(.id == $id) | .size' "$root/input-release.json")"
           test "$(wc -c < "$root/source.bundle" | tr -d ' ')" = "$source_size"
