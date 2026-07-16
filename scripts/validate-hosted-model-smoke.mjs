@@ -13,7 +13,7 @@ const promptPath = `${responsePath}.prompt.txt`;
 const receiptPath = `${responsePath}.model-receipt.json`;
 const schemaPath = join(root, "schema.json");
 const aggregatePath = join(root, "model-receipts.jsonl");
-const images = Array.from({ length: 80 }, (_, index) => {
+const images = Array.from({ length: 6 }, (_, index) => {
   const path = join(root, `smoke-${String(index).padStart(2, "0")}.png`);
   const content = readFileSync(path);
   return { name: basename(path), bytes: content.length, sha256: sha256(content) };
@@ -45,7 +45,7 @@ const files = actual.map((name) => {
 });
 const index = {
   schemaVersion: 1,
-  kind: "spaceport-hosted-model-80-image-smoke",
+  kind: "spaceport-hosted-model-six-high-detail-band-smoke",
   repository: process.env.GITHUB_REPOSITORY,
   workflow: ".github/workflows/hosted-model-smoke.yml",
   workflowTip: process.env.GITHUB_SHA,
@@ -65,7 +65,7 @@ if (index.repository !== "HansenHomeAI/deed-corpus-transparency-log"
   throw new Error("Hosted smoke environment is not the protected public macOS runner.");
 }
 writeFileSync(output, `${JSON.stringify(index, null, 2)}\n`, { flag: "wx", mode: 0o600 });
-process.stdout.write(`${JSON.stringify({ ok: true, imageCount: 80, fileRootSha256: index.fileRootSha256 })}\n`);
+process.stdout.write(`${JSON.stringify({ ok: true, imageCount: 6, fileRootSha256: index.fileRootSha256 })}\n`);
 
 function argument(name) { const index = process.argv.indexOf(name); if (index < 0 || !process.argv[index + 1]) throw new Error(`missing ${name}`); return process.argv[index + 1]; }
 function sha256(value) { return createHash("sha256").update(value).digest("hex"); }

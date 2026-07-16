@@ -13,7 +13,7 @@ test("hosted model smoke is protected, credential-isolated, maximum-cardinality,
   assert.match(workflow, /models: read/);
   assert.doesNotMatch(workflow, /contents: write|DEED_PRODUCT|DEED_REGISTRY/);
   assert.match(workflow, /unset MODEL_TOKEN GITHUB_TOKEN ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL/);
-  assert.match(workflow, /for index in range\(80\)/);
+  assert.match(workflow, /for index in range\(6\)/);
   assert.match(workflow, /cd "\$evidence"/);
   assert.match(workflow, /--model openai\/gpt-4\.1 --model-version 2025-04-14/);
   assert.match(workflow, /actions\/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4\.1\.1/);

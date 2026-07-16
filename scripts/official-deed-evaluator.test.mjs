@@ -166,14 +166,14 @@ test("per-call model receipt binds exact model, prompt, schema, images, and outp
   assert.match(shimSource, /writeFileSync\(`\$\{responsePath\}\.model-receipt\.json`/);
 });
 
-test("broker accepts exactly 80 committed images and enforces aggregate bytes before inference", () => {
+test("broker accepts exactly six committed images and enforces aggregate bytes before inference", () => {
   const image = (index) => ({ name: `crop-${index}.png`, mediaType: "image/png", bytes: 1,
     sha256: sha256(Buffer.from([index % 256])), contentBase64: Buffer.from([index % 256]).toString("base64") });
   const body = { schemaVersion: 1, prompt: "read", schema: { type: "object" },
     images: Array.from({ length: MODEL_MAX_IMAGES }, (_, index) => image(index)) };
-  assert.equal(validateBrokerRequest(body).images.length, 80);
-  assert.equal(MODEL_MAX_AGGREGATE_IMAGE_BYTES, 256 * 1024 * 1024);
-  assert.throws(() => validateBrokerRequest({ ...body, images: [...body.images, image(81)] }), /schema/);
+  assert.equal(validateBrokerRequest(body).images.length, 6);
+  assert.equal(MODEL_MAX_AGGREGATE_IMAGE_BYTES, 128 * 1024 * 1024);
+  assert.throws(() => validateBrokerRequest({ ...body, images: [...body.images, image(6)] }), /schema/);
   assert.throws(() => validateBrokerRequest({ ...body, images: body.images.slice(0, 5) }, { maxAggregateBytes: 4 }), /aggregate/);
 });
 
@@ -258,7 +258,7 @@ test("workflow statically enforces hosted ordering, credential isolation, pinned
   assert.match(workflow, /CODEX_HOME: \$\{\{ runner\.temp \}\}\/deed-evaluator\/empty-codex-home/);
   assert.match(workflow, /install -m 0600 scripts\/model-receipt\.mjs scripts\/model-broker-contract\.mjs "\$HOME\/\.local\/bin\/"/);
   assert.match(workflow, /--model-version 2025-04-14/);
-  assert.match(workflow, /Synthetic eighty-image maximum-cardinality multimodal smoke/);
+  assert.match(workflow, /Synthetic six-image high-detail deed-band capacity smoke/);
   assert.match(workflow, /cd "\$smoke"/);
   assert.match(workflow, /test -s "\$smoke\/result\.json\.model-receipt\.json"/);
   assert.match(workflow, /cp -R "\$root\/model-smoke" "\$campaign\/model-smoke"/);

@@ -1,4 +1,4 @@
-name: Hosted 80-image deed model smoke
+name: Hosted six-band deed model smoke
 run-name: deed-model-smoke-${{ github.sha }}-${{ github.run_id }}
 
 on:
@@ -69,10 +69,14 @@ jobs:
           import random, sys
           from pathlib import Path
           root = Path(sys.argv[1])
-          width = height = 64
-          for index in range(80):
-              pixels = random.Random(index).randbytes(width * height * 3)
-              (root / f"smoke-{index:02d}.ppm").write_bytes(f"P6\n{width} {height}\n255\n".encode() + pixels)
+          width, height = 2550, 1900
+          for index in range(6):
+              path = root / f"smoke-{index:02d}.ppm"
+              with path.open("wb") as stream:
+                  stream.write(f"P6\n{width} {height}\n255\n".encode())
+                  for y in range(height):
+                      shade = 0 if (y + index * 17) % 180 < 4 else 255
+                      stream.write(bytes([shade]) * width * 3)
           PY
           images=()
           for ppm in "$evidence"/*.ppm; do
@@ -84,7 +88,7 @@ jobs:
           node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({type:"object",additionalProperties:false,required:["ok"],properties:{ok:{type:"boolean",const:true}}}))' "$evidence/schema.json"
           (
             cd "$evidence"
-            PATH="$bin:$PATH" printf '%s\n' 'Synthetic eighty-image maximum-cardinality multimodal smoke. Return {"ok":true}.' | \
+            PATH="$bin:$PATH" printf '%s\n' 'Synthetic six-image high-detail deed-band capacity smoke. Return {"ok":true}.' | \
               PATH="$bin:$PATH" codex exec --ephemeral --ignore-rules --sandbox read-only --skip-git-repo-check \
                 --output-schema "$evidence/schema.json" --output-last-message "$evidence/result.json" \
                 "${images[@]}"

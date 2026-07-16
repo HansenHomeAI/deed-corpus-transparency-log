@@ -43,7 +43,7 @@ function parseCodexArgs(args) {
     else if (["--sandbox"].includes(token)) index += 1;
     else if (!["--ephemeral", "--ignore-rules", "--skip-git-repo-check"].includes(token)) throw new Error(`Unsupported codex shim argument: ${token}`);
   }
-  if (!schemaPath || !responsePath || images.length < 1 || images.length > 80) throw new Error("Codex shim invocation is incomplete.");
+  if (!schemaPath || !responsePath || images.length < 1 || images.length > 6) throw new Error("Codex shim invocation is incomplete.");
   return { schemaPath, responsePath, images };
 }
 

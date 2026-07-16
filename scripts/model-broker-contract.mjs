@@ -1,8 +1,12 @@
 import { sha256 } from "./model-receipt.mjs";
 
-export const MODEL_MAX_IMAGES = 80;
+// GitHub Models currently enforces an 8,000-input-token request cap for
+// GPT-4.1. Six high-detail deed bands (about 2,550 x 1,900 each) leave bounded
+// room for the transcription prompt and strict JSON schema. Larger source
+// selections must be split/refused before inference, never optimistically sent.
+export const MODEL_MAX_IMAGES = 6;
 export const MODEL_MAX_IMAGE_BYTES = 25 * 1024 * 1024;
-export const MODEL_MAX_AGGREGATE_IMAGE_BYTES = 256 * 1024 * 1024;
+export const MODEL_MAX_AGGREGATE_IMAGE_BYTES = 128 * 1024 * 1024;
 
 export function validateBrokerRequest(body, { maxAggregateBytes = MODEL_MAX_AGGREGATE_IMAGE_BYTES } = {}) {
   const allowed = new Set(["schemaVersion", "prompt", "schema", "images"]);
@@ -31,4 +35,3 @@ export function validateBrokerRequest(body, { maxAggregateBytes = MODEL_MAX_AGGR
 }
 
 function canonicalBase64(value) { return typeof value === "string" && /^[A-Za-z0-9+/]*={0,2}$/.test(value) && Buffer.from(value, "base64").toString("base64") === value; }
-
