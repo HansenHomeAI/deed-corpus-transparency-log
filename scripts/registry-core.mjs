@@ -511,24 +511,41 @@ export function decryptProtectedAppendReceipt(bytes, privateKeyPem, expectedKeyI
     || Buffer.from(bytes).toString("utf8") !== `${JSON.stringify(encrypted, null, 2)}\n`) {
     throw new Error("Encrypted receipt schema, key, request binding, or canonical bytes are invalid.");
   }
-  const decrypted = decryptHybridPayload(encrypted.envelopeBase64url, privateKeyPem, expectedKeyId,
+  const plaintext = decryptHybridPayload(encrypted.envelopeBase64url, privateKeyPem, expectedKeyId,
     MAX_RECEIPT_BYTES, "Decrypted protected append receipt exceeds the 32-megabyte limit.", {
-      allowPadded: true, returnPaddingMetadata: true,
+      returnPlaintextBytes: true,
     });
-  if (encrypted.plaintextReceiptSha256 !== sha256(decrypted.valueBytes)) {
-    throw new Error("Attested encrypted wrapper does not bind the decrypted receipt bytes.");
+  let receiptBytes = plaintext;
+  let paddedPlaintextBytes = null;
+  if (encrypted.plaintextReceiptSha256 !== sha256(receiptBytes)) {
+    let padded;
+    try { padded = JSON.parse(plaintext.toString("utf8")); }
+    catch { throw new Error("Attested encrypted wrapper does not bind the decrypted receipt bytes."); }
+    const paddedFields = new Set(["schemaVersion", "kind", "payloadBase64url", "padding"]);
+    if (!hasExactKeys(padded, paddedFields) || padded.schemaVersion !== 1 || padded.kind !== PADDED_PAYLOAD_KIND
+      || !isCanonicalBase64url(padded.payloadBase64url) || typeof padded.padding !== "string"
+      || !/^0*$/.test(padded.padding) || !plaintext.equals(Buffer.from(`${JSON.stringify(padded)}\n`, "utf8"))) {
+      throw new Error("Attested encrypted wrapper does not bind the decrypted receipt bytes.");
+    }
+    paddedPlaintextBytes = plaintext.length;
+    receiptBytes = Buffer.from(padded.payloadBase64url, "base64url");
+    if (receiptBytes.length > MAX_RECEIPT_BYTES || encrypted.plaintextReceiptSha256 !== sha256(receiptBytes)) {
+      throw new Error("Attested encrypted wrapper does not bind the decrypted receipt bytes.");
+    }
   }
-  const receipt = decrypted.value;
+  let receipt;
+  try { receipt = JSON.parse(receiptBytes.toString("utf8")); }
+  catch { throw new Error("Decrypted protected append receipt is not valid JSON."); }
   if (receipt?.kind === "spaceport-deed-corpus-protected-append-rejection-receipt") {
-    if (decrypted.paddedPlaintextBytes !== rejectionPaddedPlaintextBytes(receipt.registry)) {
+    if (paddedPlaintextBytes !== rejectionPaddedPlaintextBytes(receipt.registry)) {
       throw new Error("Protected rejection receipt lacks its fixed authenticated padding class.");
     }
     validateProtectedRejectionReceipt(receipt, { expectedRequestSha256, expectedCiphertextSha256, expectedSignerDigest });
   } else {
-    if (decrypted.paddedPlaintextBytes !== null) throw new Error("Successful protected append receipts must not be padded.");
+    if (paddedPlaintextBytes !== null) throw new Error("Successful protected append receipts must not be padded.");
     validateProtectedReceipt(receipt, { expectedRequestSha256, expectedCiphertextSha256, expectedSignerDigest });
   }
-  return returnReceiptBytes ? { receipt, receiptBytes: decrypted.valueBytes } : receipt;
+  return returnReceiptBytes ? { receipt, receiptBytes } : receipt;
 }
 
 function validateProtectedRejectionReceipt(receipt,
@@ -778,7 +795,7 @@ export function decryptRequest(encoded, privateKeyPem, expectedKeyId) {
 }
 
 function decryptHybridPayload(encoded, privateKeyPem, expectedKeyId, maximumPlaintextBytes, sizeError,
-  { allowPadded = false, returnPaddingMetadata = false } = {}) {
+  { allowPadded = false, returnPaddingMetadata = false, returnPlaintextBytes = false } = {}) {
   let envelope;
   try {
     const bytes = Buffer.from(encoded || "", "base64url");
@@ -818,6 +835,7 @@ function decryptHybridPayload(encoded, privateKeyPem, expectedKeyId, maximumPlai
     throw new Error("Encrypted request authentication failed.");
   }
   if (plaintext.length > maximumPlaintextBytes) throw new Error(sizeError);
+  if (returnPlaintextBytes) return plaintext;
   try {
     let valueBytes = plaintext;
     let value = JSON.parse(valueBytes.toString("utf8"));
