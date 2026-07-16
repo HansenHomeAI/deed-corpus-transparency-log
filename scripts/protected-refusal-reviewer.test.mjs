@@ -93,7 +93,8 @@ test("protected workflow has no product checkout and retains challenge, OIDC att
   const workflow = readFileSync(new URL("../.github/workflows/protected-refusal-reviewer.yml", import.meta.url), "utf8");
   assert.doesNotMatch(workflow, /repository:\s+HansenHomeAI\/Autodesk-automation/);
   for (const text of ["openssl rand 32", "actions/attest@", "gh attestation verify", "--deny-self-hosted-runners",
-    "encrypt-evidence", "Upload ciphertext evidence only", "rm -rf \"$RUNNER_TEMP/deed-refusal-review\""]) assert.match(workflow, new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    "persist-credentials: false", "contents: write", "encrypt-evidence", "Upload ciphertext evidence only",
+    "rm -rf \"$RUNNER_TEMP/deed-refusal-review\""]) assert.match(workflow, new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 });
 
 function call(model, index, challenge) {
