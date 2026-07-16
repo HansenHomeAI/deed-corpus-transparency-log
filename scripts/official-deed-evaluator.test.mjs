@@ -258,6 +258,8 @@ test("workflow statically enforces hosted ordering, credential isolation, pinned
   assert.match(workflow, /--model-version 2025-04-14/);
   assert.match(workflow, /Synthetic eighty-image maximum-cardinality multimodal smoke/);
   assert.match(workflow, /test -s "\$smoke\/result\.json\.model-receipt\.json"/);
+  assert.match(workflow, /cp -R "\$root\/model-smoke" "\$campaign\/model-smoke"/);
+  assert.match(workflow, /cp "\$root\/model-receipts\.jsonl" "\$campaign\/model-receipts\.jsonl"/);
   assert.match(workflow, /GH_TOKEN: \$\{\{ github\.token \}\}/);
   assert.doesNotMatch(workflow, /DEED_PRODUCT_READONLY_TOKEN/);
   assert.match(workflow, /repos\/HansenHomeAI\/deed-corpus-transparency-log\/releases\/\$INPUT_RELEASE_ID/);

@@ -342,8 +342,10 @@ jobs:
         run: |
           set -euo pipefail
           root="$RUNNER_TEMP/deed-evaluator"
-          cp "$root/model-receipts.jsonl" "$root/private/runs/${{ inputs.campaign }}/model-receipts.jsonl"
-          cp "$root/attestation-verification.json" "$root/private/runs/${{ inputs.campaign }}/attestation-verification.json"
+          campaign="$root/private/runs/${{ inputs.campaign }}"
+          cp "$root/model-receipts.jsonl" "$campaign/model-receipts.jsonl"
+          cp -R "$root/model-smoke" "$campaign/model-smoke"
+          cp "$root/attestation-verification.json" "$campaign/attestation-verification.json"
           node scripts/official-deed-evaluator.mjs encrypt-evidence \
             --request "$root/request.json" --root "$root/private" \
             --out "$root/evidence.bundle" > "$root/encrypted-evidence-receipt.json"
