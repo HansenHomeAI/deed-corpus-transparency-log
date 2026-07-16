@@ -6,7 +6,8 @@ import { mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync }
 import { dirname, join, relative, resolve } from "node:path";
 import { createFileSet, encryptBundle } from "./official-evaluator-core.mjs";
 import {
-  REVIEW_MODELS, buildAssessmentPrompt, buildAssessmentSchema, buildPropertyAliases, buildReviewIndex,
+  REVIEW_MODELS, buildAssessmentPrompt, buildAssessmentSchema, buildPropertyAliases,
+  buildPropertyIdentifierCommitments, buildReviewIndex,
   normalizeAssessment, reconcilePropertyIdentity, sealCallReceipt, sha256, stableJson,
   validateCatalogModels, validateProtectedReviewerEnvironment, validateReviewDispatchRequest,
   validateReviewIndex, validateReviewRequest,
@@ -138,6 +139,7 @@ async function review() {
       callReceiptSha256s: calls.map((call) => call.receiptSha256), calls,
       propertyIdentityEvidenceSha256: property.propertyIdentityEvidenceSha256,
       propertyAliases: property.propertyAliases,
+      propertyIdentifierCommitments: property.propertyIdentifierCommitments,
       propertyAliasReceiptSha256: property.propertyAliasReceiptSha256,
       status: "approved", critical: 0, major: 0,
     });
@@ -236,14 +238,18 @@ function deriveReviewEvent() {
   const property = JSON.parse(readFileSync(join(root, "cases", item.caseId, "property-identity-evidence.json"), "utf8"));
   if (sha256(stableJson(property)) !== item.propertyIdentityEvidenceSha256
     || stableJson(property.propertyAliases) !== stableJson(item.propertyAliases)
-    || stableJson(buildPropertyAliases(property.agreedIdentity)) !== stableJson(item.propertyAliases)) {
+    || stableJson(buildPropertyAliases(property.agreedIdentity)) !== stableJson(item.propertyAliases)
+    || stableJson(property.propertyIdentifierCommitments) !== stableJson(item.propertyIdentifierCommitments)
+    || stableJson(buildPropertyIdentifierCommitments(property.agreedIdentity))
+      !== stableJson(item.propertyIdentifierCommitments)) {
     throw new Error("Protected property evidence differs.");
   }
   const aliasReceipt = JSON.parse(readFileSync(join(root, "cases", item.caseId, "property-alias-receipt.json"), "utf8"));
   if (sha256(stableJson(aliasReceipt)) !== item.propertyAliasReceiptSha256
     || aliasReceipt?.schemaVersion !== 1 || aliasReceipt?.kind !== "source-visible-property-alias-receipt"
     || aliasReceipt.propertyIdentityEvidenceSha256 !== item.propertyIdentityEvidenceSha256
-    || stableJson(aliasReceipt.propertyAliases) !== stableJson(item.propertyAliases)) {
+    || stableJson(aliasReceipt.propertyAliases) !== stableJson(item.propertyAliases)
+    || stableJson(aliasReceipt.propertyIdentifierCommitments) !== stableJson(item.propertyIdentifierCommitments)) {
     throw new Error("Protected property alias receipt differs.");
   }
   const fileSetReceipt = JSON.parse(readFileSync(join(root, ".evidence-fileset-receipt.json"), "utf8"));
@@ -259,6 +265,7 @@ function deriveReviewEvent() {
     reviewerWorkflowRunId: index.reviewerWorkflowRunId, reviewerWorkflowRunAttempt: index.reviewerWorkflowRunAttempt,
     protectedChallengeSha256: index.protectedChallengeSha256, semanticSystems,
     propertyIdentityEvidenceSha256: item.propertyIdentityEvidenceSha256, propertyAliases: item.propertyAliases,
+    propertyIdentifierCommitments: item.propertyIdentifierCommitments,
     propertyAliasReceiptSha256: item.propertyAliasReceiptSha256,
     productCodeMounted: false, productOutputAvailable: false, geometryArtifactsExpected: 0,
     status: "approved", critical: 0, major: 0,

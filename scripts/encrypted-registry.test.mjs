@@ -432,14 +432,15 @@ test("fail-safe truth requires a prior distinct two-system protected review and 
   registry = appendCorpusRegistryEvent(registry, withIssued(assignmentBody(1, { split: "fail-safe" }), iso(4)));
   const second = registry.events.at(-1);
   const reused = reviewBody(second, 1, iso(5));
-  reused.payload.propertyAliases = [review.payload.propertyAliases.find((alias) => alias.kind === "county-subdivision-block-lot"),
+  reused.payload.propertyAliases = [review.payload.propertyAliases.find((alias) => alias.kind === "county-subdivision-lot"),
+    reused.payload.propertyAliases.find((alias) => alias.kind === "county-subdivision-block-lot"),
     reused.payload.propertyAliases.find((alias) => alias.kind === "county-parcel")]
     .sort((a, b) => stableJson(a).localeCompare(stableJson(b)));
   registry = appendCorpusRegistryEvent(registry, withIssued(reused, iso(5)));
   const conflict = validateCorpusRegistry({ registry });
   assert.equal(conflict.ok, false);
-  assert.ok(conflict.errors.some((error) => error.code === "REGISTRY_REVIEW_SEAL_INVALID"),
-    "shared plat alias with a differing parcel alias must fail closed, not count as a distinct property");
+  assert.ok(conflict.errors.some((error) => error.code === "REGISTRY_REVIEW_PROPERTY_CONFLICT"),
+    "weak/shared alias with a differing parcel commitment must require adjudication, not count duplicate or distinct");
 });
 
 test("review-seal callers can submit only an exact protected-run reference, never hash-shaped review facts", () => {
@@ -754,9 +755,17 @@ function reviewBody(assignment, index, sealedAt) {
         assessmentSha256: hash(`assessment-meta-${index}`) },
     ], propertyIdentityEvidenceSha256: hash(`property-evidence-${index}`),
     propertyAliases: [
-      { kind: "county-parcel", sha256: hash(`protected-parcel-${index}`) },
-      { kind: "county-subdivision-block-lot", sha256: hash(`protected-plat-${index}`) },
+      { kind: "county-parcel", strength: "strong", sha256: hash(`protected-parcel-${index}`) },
+      { kind: "county-subdivision-lot", strength: "weak", sha256: hash(`protected-plat-weak-${index}`) },
+      { kind: "county-subdivision-block-lot", strength: "strong", sha256: hash(`protected-plat-${index}`) },
     ].sort((a, b) => stableJson(a).localeCompare(stableJson(b))),
+    propertyIdentifierCommitments: [
+      { field: "block", sha256: hash(`protected-block-${index}`) },
+      { field: "county", sha256: hash("protected-county") },
+      { field: "lot", sha256: hash("protected-lot-7") },
+      { field: "parcel", sha256: hash(`protected-parcel-value-${index}`) },
+      { field: "subdivision", sha256: hash("protected-subdivision") },
+    ],
     propertyAliasReceiptSha256: hash(`property-alias-receipt-${index}`), productCodeMounted: false,
     productOutputAvailable: false, geometryArtifactsExpected: 0, status: "approved", critical: 0, major: 0, sealedAt,
   } };

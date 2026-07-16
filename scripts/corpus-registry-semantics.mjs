@@ -68,7 +68,7 @@ export function validateCorpusRegistry({ registry, previousRegistry = null } = {
   const truthIdentities = new Map(TRUTH_IDENTITY_FIELDS.map((field) => [field, new Map()]));
   const instrumentGroups = new Map();
   const familyGroups = new Map();
-  const protectedPropertyAliases = new Map();
+  const protectedProperties = [];
   let priorHash = ZERO;
   let priorTime = -Infinity;
   for (let index = 0; index < registry.events.length; index += 1) {
@@ -88,7 +88,7 @@ export function validateCorpusRegistry({ registry, previousRegistry = null } = {
       }
       validateAssignment(event, at, { errors, assignments, identities, instrumentGroups, familyGroups });
     } else if (event.eventType === "review-seal") {
-      validateReviewSeal(event, at, { errors, assignments, reviewSeals, protectedPropertyAliases });
+      validateReviewSeal(event, at, { errors, assignments, reviewSeals, protectedProperties });
     } else if (event.eventType === "truth-seal") {
       validateTruthSeal(event, at, { errors, assignments, reviewSeals, truths, truthIdentities });
     } else if (event.eventType === "source-release") {
@@ -121,7 +121,7 @@ export function validateCorpusRegistry({ registry, previousRegistry = null } = {
 }
 
 function validateReviewSeal(event, at, context) {
-  const { errors, assignments, reviewSeals, protectedPropertyAliases } = context;
+  const { errors, assignments, reviewSeals, protectedProperties } = context;
   const assignment = assignments.get(event.caseId);
   const payload = event.payload || {};
   const systems = payload.semanticSystems;
@@ -145,7 +145,7 @@ function validateReviewSeal(event, at, context) {
     && new Set(systems.map((system) => system.sessionIdSha256)).size === 2;
   const aliases = payload.propertyAliases;
   const aliasesValid = validPropertyAliases(aliases);
-  const reusedProperty = aliasesValid && aliases.find((alias) => protectedPropertyAliases.has(alias.sha256));
+  const commitmentsValid = validPropertyIdentifierCommitments(payload.propertyIdentifierCommitments);
   if (!assignment || reviewSeals.has(event.caseId) || event.corpusId !== assignment.corpusId
     || assignment.payload?.split !== "fail-safe" || payload.assignmentEventSha256 !== assignment.eventSha256
     || payload.sourceSha256 !== assignment.payload?.sourceSha256
@@ -162,7 +162,7 @@ function validateReviewSeal(event, at, context) {
     || !/^[1-9][0-9]*$/.test(payload.reviewerWorkflowRunAttempt || "")
     || !SHA256.test(payload.protectedChallengeSha256 || "") || !systemsValid
     || !SHA256.test(payload.propertyIdentityEvidenceSha256 || "") || !SHA256.test(payload.propertyAliasReceiptSha256 || "")
-    || !aliasesValid || (reusedProperty && protectedPropertyAliases.get(reusedProperty.sha256)?.caseId !== event.caseId)
+    || !aliasesValid || !commitmentsValid
     || payload.productCodeMounted !== false || payload.productOutputAvailable !== false
     || payload.geometryArtifactsExpected !== 0 || payload.status !== "approved"
     || payload.critical !== 0 || payload.major !== 0 || payload.sealedAt !== event.issuedAt
@@ -170,8 +170,20 @@ function validateReviewSeal(event, at, context) {
     errors.push(failure("REGISTRY_REVIEW_SEAL_INVALID", `${at} is not a unique attested two-system refusal review over exact source and selector bindings`));
     return;
   }
+  for (const prior of protectedProperties) {
+    if (!propertyAliasOverlap(aliases, prior.payload.propertyAliases) || prior.caseId === event.caseId) continue;
+    const conflicts = propertyCommitmentConflicts(payload.propertyIdentifierCommitments,
+      prior.payload.propertyIdentifierCommitments);
+    if (conflicts.length > 0) {
+      errors.push(failure("REGISTRY_REVIEW_PROPERTY_CONFLICT",
+        `${at} shares a property alias but conflicts on ${conflicts.join(",")}; protected adjudication is required`));
+      return;
+    }
+    errors.push(failure("REGISTRY_REVIEW_SEAL_INVALID", `${at} replays an existing protected property alias`));
+    return;
+  }
   reviewSeals.set(event.caseId, event);
-  aliases.forEach((alias) => protectedPropertyAliases.set(alias.sha256, event));
+  protectedProperties.push(event);
 }
 
 function validPropertyAliases(value) {
@@ -179,11 +191,26 @@ function validPropertyAliases(value) {
     "county-subdivision-tract"]);
   return Array.isArray(value) && value.length > 0
     && value.every((alias) => alias && typeof alias === "object" && !Array.isArray(alias)
-      && Object.keys(alias).length === 2 && kinds.has(alias.kind) && SHA256.test(alias.sha256 || ""))
+      && Object.keys(alias).length === 3 && kinds.has(alias.kind)
+      && alias.strength === (alias.kind === "county-subdivision-lot" ? "weak" : "strong")
+      && SHA256.test(alias.sha256 || ""))
     && new Set(value.map((alias) => alias.kind)).size === value.length
     && new Set(value.map((alias) => alias.sha256)).size === value.length
     && stableJson(value) === stableJson([...value].sort((a, b) => stableJson(a).localeCompare(stableJson(b))));
 }
+
+function validPropertyIdentifierCommitments(value) {
+  const fields = new Set(["county", "subdivision", "lot", "block", "parcel", "tract"]);
+  return Array.isArray(value) && value.length > 0
+    && value.every((item) => item && typeof item === "object" && !Array.isArray(item)
+      && Object.keys(item).length === 2 && fields.has(item.field) && SHA256.test(item.sha256 || ""))
+    && new Set(value.map((item) => item.field)).size === value.length
+    && stableJson(value) === stableJson([...value].sort((a, b) => a.field.localeCompare(b.field)));
+}
+function propertyAliasOverlap(left, right) { const hashes = new Set(left.map((alias) => alias.sha256));
+  return right.some((alias) => hashes.has(alias.sha256)); }
+function propertyCommitmentConflicts(left, right) { const prior = new Map(right.map((item) => [item.field, item.sha256]));
+  return left.filter((item) => prior.has(item.field) && prior.get(item.field) !== item.sha256).map((item) => item.field).sort(); }
 
 function validateAppendOnly(previous, current, errors) {
   const prior = validateCorpusRegistry({ registry: previous });
