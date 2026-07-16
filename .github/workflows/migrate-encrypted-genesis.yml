@@ -1,0 +1,95 @@
+name: One-time encrypted deed corpus genesis migration
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+  artifact-metadata: write
+
+concurrency:
+  group: deed-corpus-encrypted-custody-registry
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    environment: deed-corpus-registry
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+
+      - name: Refuse any unprotected or stale workflow ref
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/main
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git fetch --quiet origin refs/heads/main
+          test "$(git rev-parse FETCH_HEAD)" = "$GITHUB_SHA"
+
+      - name: Refuse repeat migration
+        run: |
+          set -euo pipefail
+          test "$(node -e 'process.stdout.write(String(require("./registry/index.json").envelopes.length))')" = "0"
+
+      - name: Fetch the canonical private registry into ephemeral storage
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.DEED_REGISTRY_SOURCE_TOKEN }}
+        run: |
+          set -euo pipefail
+          umask 077
+          test -n "$GH_TOKEN"
+          gh api \
+            -H "Accept: application/vnd.github.raw+json" \
+            "repos/HansenHomeAI/Autodesk-automation/contents/registry/deed-corpus-events.json?ref=deed-corpus-registry" \
+            > "$RUNNER_TEMP/deed-corpus-events.json"
+
+      - name: Validate, bind, and encrypt the complete genesis without logging plaintext
+        env:
+          REGISTRY_AES_KEY_BASE64: ${{ secrets.DEED_REGISTRY_AES_KEY_BASE64 }}
+          STATE_KEY_ID: ${{ vars.DEED_REGISTRY_STATE_KEY_ID }}
+        run: |
+          set -euo pipefail
+          test -n "$REGISTRY_AES_KEY_BASE64"
+          test -n "$STATE_KEY_ID"
+          node scripts/migrate-encrypted-genesis.mjs \
+            --index registry/index.json \
+            --ciphertext-dir registry/ciphertexts \
+            --private-registry "$RUNNER_TEMP/deed-corpus-events.json" \
+            --legacy-file anchors.json \
+            --state-key-id "$STATE_KEY_ID" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-run-attempt "$GITHUB_RUN_ATTEMPT"
+
+      - name: Verify the opaque public genesis
+        run: node scripts/verify-index.mjs --index registry/index.json --ciphertext-dir registry/ciphertexts
+
+      - name: Attest the exact encrypted genesis and public index
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: |
+            registry/index.json
+            registry/ciphertexts/000001.bin
+
+      - name: Commit and push encrypted genesis
+        run: |
+          set -euo pipefail
+          git config user.name "deed-corpus-transparency[bot]"
+          git config user.email "deed-corpus-transparency[bot]@users.noreply.github.com"
+          git add registry/index.json registry/ciphertexts/000001.bin
+          git diff --cached --quiet && exit 1
+          git commit -m "registry: migrate encrypted custody genesis"
+          git push origin HEAD:main
+
+      - name: Remove private source and key-adjacent material
+        if: always()
+        run: rm -f "$RUNNER_TEMP/deed-corpus-events.json"

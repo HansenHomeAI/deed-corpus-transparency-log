@@ -1,0 +1,367 @@
+name: Official protected deed corpus evaluator
+run-name: deed-evaluator-${{ inputs.request_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      request_id:
+        description: Random 32-byte request id encoded as lowercase hex
+        required: true
+        type: string
+      mode:
+        description: Evaluation campaign type
+        required: true
+        type: choice
+        options:
+          - final
+          - fail-safe
+      campaign:
+        description: Must be final for final mode or raw-fail-safe for fail-safe mode
+        required: true
+        type: string
+      product_code_tip:
+        description: Exact private Autodesk-automation commit to evaluate
+        required: true
+        type: string
+      verifier_policy_tip:
+        description: Exact protected public main commit containing this workflow
+        required: true
+        type: string
+      input_release_id:
+        description: Exact private Autodesk-automation draft release containing the encrypted inputs
+        required: true
+        type: string
+      source_asset_id:
+        description: Exact source.bundle asset id on the private draft release
+        required: true
+        type: string
+      source_bundle_sha256:
+        description: SHA-256 of source.bundle ciphertext
+        required: true
+        type: string
+      truth_asset_id:
+        description: Distinct truth.bundle asset id on the same private draft release
+        required: true
+        type: string
+      truth_bundle_sha256:
+        description: SHA-256 of truth.bundle ciphertext
+        required: true
+        type: string
+      requester_public_key_pem_base64:
+        description: Base64 PEM public key used only to encrypt returned evidence
+        required: true
+        type: string
+      requester_public_key_sha256:
+        description: SHA-256 of decoded requester public-key PEM bytes
+        required: true
+        type: string
+
+permissions:
+  actions: write
+  artifact-metadata: write
+  attestations: write
+  contents: read
+  id-token: write
+  models: read
+
+concurrency:
+  group: deed-corpus-evaluator-${{ inputs.request_id }}
+  cancel-in-progress: false
+
+jobs:
+  evaluate:
+    environment: deed-corpus-evaluator
+    runs-on: macos-15
+    timeout-minutes: 360
+    env:
+      SPACEPORT_RUNNER_ENVIRONMENT: github-hosted
+      SPACEPORT_EVALUATOR_WORKFLOW_REF: HansenHomeAI/deed-corpus-transparency-log/.github/workflows/official-deed-evaluator.yml@refs/heads/main
+    steps:
+      - name: Checkout the exact protected verifier policy
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Pin protected main and validate the opaque request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUEST_ID: ${{ inputs.request_id }}
+          EVALUATION_MODE: ${{ inputs.mode }}
+          CAMPAIGN: ${{ inputs.campaign }}
+          PRODUCT_CODE_TIP: ${{ inputs.product_code_tip }}
+          VERIFIER_POLICY_TIP: ${{ inputs.verifier_policy_tip }}
+          INPUT_RELEASE_ID: ${{ inputs.input_release_id }}
+          SOURCE_ASSET_ID: ${{ inputs.source_asset_id }}
+          SOURCE_BUNDLE_SHA256: ${{ inputs.source_bundle_sha256 }}
+          TRUTH_ASSET_ID: ${{ inputs.truth_asset_id }}
+          TRUTH_BUNDLE_SHA256: ${{ inputs.truth_bundle_sha256 }}
+          REQUESTER_PUBLIC_KEY_PEM_BASE64: ${{ inputs.requester_public_key_pem_base64 }}
+          REQUESTER_PUBLIC_KEY_SHA256: ${{ inputs.requester_public_key_sha256 }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/main
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$VERIFIER_POLICY_TIP" = "$GITHUB_SHA"
+          git fetch --quiet origin refs/heads/main
+          test "$(git rev-parse FETCH_HEAD)" = "$GITHUB_SHA"
+          umask 077
+          mkdir -p "$RUNNER_TEMP/deed-evaluator"
+          node scripts/official-deed-evaluator.mjs write-request \
+            --out "$RUNNER_TEMP/deed-evaluator/request.json"
+
+      - name: Verify private draft-release provenance and download ciphertext assets only
+        env:
+          GH_TOKEN: ${{ secrets.DEED_PRODUCT_READONLY_TOKEN }}
+          INPUT_RELEASE_ID: ${{ inputs.input_release_id }}
+          SOURCE_ASSET_ID: ${{ inputs.source_asset_id }}
+          TRUTH_ASSET_ID: ${{ inputs.truth_asset_id }}
+          SOURCE_BUNDLE_SHA256: ${{ inputs.source_bundle_sha256 }}
+          TRUTH_BUNDLE_SHA256: ${{ inputs.truth_bundle_sha256 }}
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/deed-evaluator"
+          gh api "repos/HansenHomeAI/Autodesk-automation/releases/$INPUT_RELEASE_ID" > "$root/input-release.json"
+          node scripts/official-deed-evaluator.mjs verify-input-release \
+            --request "$root/request.json" --release "$root/input-release.json"
+          gh api -H "Accept: application/octet-stream" \
+            "repos/HansenHomeAI/Autodesk-automation/releases/assets/$SOURCE_ASSET_ID" > "$root/source.bundle"
+          gh api -H "Accept: application/octet-stream" \
+            "repos/HansenHomeAI/Autodesk-automation/releases/assets/$TRUTH_ASSET_ID" > "$root/truth.bundle"
+          source_size="$(jq -er --argjson id "$SOURCE_ASSET_ID" '.assets[] | select(.id == $id) | .size' "$root/input-release.json")"
+          truth_size="$(jq -er --argjson id "$TRUTH_ASSET_ID" '.assets[] | select(.id == $id) | .size' "$root/input-release.json")"
+          test "$(wc -c < "$root/source.bundle" | tr -d ' ')" = "$source_size"
+          test "$(wc -c < "$root/truth.bundle" | tr -d ' ')" = "$truth_size"
+          test "$(shasum -a 256 "$root/source.bundle" | awk '{print $1}')" = "$SOURCE_BUNDLE_SHA256"
+          test "$(shasum -a 256 "$root/truth.bundle" | awk '{print $1}')" = "$TRUTH_BUNDLE_SHA256"
+
+      - name: Checkout the exact private product commit with a read-only deploy key
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: HansenHomeAI/Autodesk-automation
+          ref: ${{ inputs.product_code_tip }}
+          ssh-key: ${{ secrets.DEED_PRODUCT_READONLY_DEPLOY_KEY }}
+          path: private-product
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify private checkout and materialize source only
+        env:
+          BUNDLE_PRIVATE_KEY_PEM: ${{ secrets.DEED_EVALUATOR_BUNDLE_PRIVATE_KEY_PEM }}
+          BUNDLE_KEY_ID: ${{ vars.DEED_EVALUATOR_BUNDLE_KEY_ID }}
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/deed-evaluator"
+          test "$(git -C private-product rev-parse HEAD)" = "${{ inputs.product_code_tip }}"
+          umask 077
+          printf '%s' "$BUNDLE_PRIVATE_KEY_PEM" > "$root/bundle-private.pem"
+          node scripts/deed-bundle.mjs unpack --bundle "$root/source.bundle" \
+            --private-key "$root/bundle-private.pem" --key-id "$BUNDLE_KEY_ID" \
+            --role source --request-id "${{ inputs.request_id }}" --out "$root/private" \
+            > "$root/source-unpack.result.json" 2> "$root/source-unpack.stderr.log"
+          node scripts/official-deed-evaluator.mjs verify-source \
+            --request "$root/request.json" --root "$root/private" \
+            > "$root/source-verification.json" 2> "$root/source-verification.stderr.log"
+          rm -f "$root/source.bundle"
+
+      - name: Install runtime dependencies
+        run: |
+          set -euo pipefail
+          brew list poppler >/dev/null 2>&1 || brew install poppler
+          node --version
+          python3 --version
+          pdftoppm -v 2>&1 | head -1
+
+      - name: Generate an ephemeral encrypted-registry response key
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/deed-evaluator"
+          umask 077
+          openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 \
+            -out "$root/registry-response-private.pem"
+          openssl pkey -in "$root/registry-response-private.pem" -pubout \
+            -out "$root/registry-response-public.pem"
+          mkdir -p "$root/empty-codex-home"
+
+      - name: Start credential-isolated visual broker and execute all source-only product trials
+        env:
+          MODEL_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ github.token }}
+          CODEX_HOME: ${{ runner.temp }}/deed-evaluator/empty-codex-home
+          DEED_REGISTRY_RESPONSE_PRIVATE_KEY_PATH: ${{ runner.temp }}/deed-evaluator/registry-response-private.pem
+          DEED_REGISTRY_RESPONSE_PUBLIC_KEY_PATH: ${{ runner.temp }}/deed-evaluator/registry-response-public.pem
+          DEED_REGISTRY_RESPONSE_KEY_ID: ${{ inputs.request_id }}
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/deed-evaluator"
+          mkdir -p "$HOME/.local/bin"
+          install -m 0700 scripts/codex-models-shim.mjs "$HOME/.local/bin/codex"
+          install -m 0600 scripts/model-receipt.mjs scripts/model-broker-contract.mjs "$HOME/.local/bin/"
+          umask 077
+          printf '%s' "$MODEL_TOKEN" > "$root/model-token"
+          unset MODEL_TOKEN GITHUB_TOKEN ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL
+          env -i HOME="$HOME" PATH="$PATH" \
+            node scripts/github-models-broker.mjs \
+              --token-file "$root/model-token" \
+              --config "$HOME/.local/bin/.spaceport-model-broker.json" \
+              --receipts "$root/model-receipts.jsonl" \
+              --model openai/gpt-4.1 \
+              --model-version 2025-04-14 \
+            > "$root/model-broker.log" 2>&1 &
+          broker_pid="$!"
+          echo "$broker_pid" > "$root/model-broker.pid"
+          trap 'kill "$broker_pid" 2>/dev/null || true; wait "$broker_pid" 2>/dev/null || true' EXIT
+          for attempt in {1..100}; do
+            test -f "$HOME/.local/bin/.spaceport-model-broker.json" && break
+            sleep 0.1
+          done
+          test -f "$HOME/.local/bin/.spaceport-model-broker.json"
+          export PATH="$HOME/.local/bin:$PATH"
+          smoke="$root/model-smoke"
+          mkdir -p "$smoke"
+          python3 - "$smoke" <<'PY'
+          import random, sys
+          from pathlib import Path
+          root = Path(sys.argv[1])
+          width = height = 64
+          for index in range(80):
+              pixels = random.Random(index).randbytes(width * height * 3)
+              (root / f"smoke-{index:02d}.ppm").write_bytes(f"P6\n{width} {height}\n255\n".encode() + pixels)
+          PY
+          images=()
+          for ppm in "$smoke"/*.ppm; do
+            png="${ppm%.ppm}.png"
+            sips -s format png "$ppm" --out "$png" >/dev/null
+            rm -f "$ppm"
+            images+=(--image "$png")
+          done
+          node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({type:"object",additionalProperties:false,required:["ok"],properties:{ok:{type:"boolean",const:true}}}))' "$smoke/schema.json"
+          printf '%s\n' 'Synthetic eighty-image maximum-cardinality multimodal smoke. Return {"ok":true}.' | \
+            codex exec --ephemeral --ignore-rules --sandbox read-only --skip-git-repo-check \
+              --output-schema "$smoke/schema.json" --output-last-message "$smoke/result.json" \
+              "${images[@]}"
+          node -e 'const v=require(process.argv[1]); if(v.ok!==true)process.exit(1)' "$smoke/result.json"
+          test -s "$smoke/result.json.model-receipt.json"
+          node private-product/scripts/deed-corpus-run.mjs \
+            --manifest "$root/private/private-manifest.json" \
+            --campaign "${{ inputs.campaign }}" --trials 3 --cold \
+            --phase execute-only --json > "$root/pretruth-result.json" \
+            2> "$root/product-execute.stderr.log"
+          kill "$broker_pid"
+          wait "$broker_pid" || true
+          trap - EXIT
+          rm -f "$HOME/.local/bin/.spaceport-model-broker.json" "$HOME/.local/bin/codex" \
+            "$HOME/.local/bin/model-receipt.mjs" "$HOME/.local/bin/model-broker-contract.mjs"
+
+      - name: Rebuild and validate the exact execution index before attestation
+        id: execution
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/deed-evaluator"
+          index="$root/private/runs/${{ inputs.campaign }}/execution-index.json"
+          node scripts/official-deed-evaluator.mjs verify-source \
+            --request "$root/request.json" --root "$root/private"
+          node scripts/official-deed-evaluator.mjs validate-index \
+            --request "$root/request.json" --root "$root/private" --index "$index" \
+            > "$root/index-validation.json"
+          echo "index=$index" >> "$GITHUB_OUTPUT"
+
+      - name: Attest the one exact execution index
+        id: attest_execution
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-path: ${{ steps.execution.outputs.index }}
+          show-summary: false
+
+      - name: Independently verify retained Sigstore bundle and append execution seal
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEED_REGISTRY_RESPONSE_PRIVATE_KEY_PATH: ${{ runner.temp }}/deed-evaluator/registry-response-private.pem
+          DEED_REGISTRY_RESPONSE_PUBLIC_KEY_PATH: ${{ runner.temp }}/deed-evaluator/registry-response-public.pem
+          DEED_REGISTRY_RESPONSE_KEY_ID: ${{ inputs.request_id }}
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/deed-evaluator"
+          index="${{ steps.execution.outputs.index }}"
+          bundle="${{ steps.attest_execution.outputs.bundle-path }}"
+          test -s "$bundle"
+          gh attestation verify "$index" \
+            --repo HansenHomeAI/deed-corpus-transparency-log \
+            --signer-workflow HansenHomeAI/deed-corpus-transparency-log/.github/workflows/official-deed-evaluator.yml \
+            --signer-digest "$GITHUB_SHA" \
+            --source-ref refs/heads/main \
+            --cert-oidc-issuer https://token.actions.githubusercontent.com \
+            --deny-self-hosted-runners --bundle "$bundle" --format json \
+            > "$root/attestation-verification.json"
+          cp "$bundle" "$root/private/runs/${{ inputs.campaign }}/execution-index.sigstore.json"
+          node private-product/scripts/deed-corpus-run.mjs \
+            --manifest "$root/private/private-manifest.json" \
+            --campaign "${{ inputs.campaign }}" --phase resume \
+            --resume-stage seal-only --execution-attestation "$bundle" --json \
+            > "$root/seal-only-result.json" 2> "$root/product-seal.stderr.log"
+          test -s "$root/private/runs/${{ inputs.campaign }}/execution-seal.json"
+          node scripts/official-deed-evaluator.mjs verify-source \
+            --request "$root/request.json" --root "$root/private"
+
+      - name: Decrypt truth only after the attested execution seal exists
+        env:
+          BUNDLE_KEY_ID: ${{ vars.DEED_EVALUATOR_BUNDLE_KEY_ID }}
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/deed-evaluator"
+          test -s "$root/private/runs/${{ inputs.campaign }}/execution-seal.json"
+          node scripts/deed-bundle.mjs unpack --bundle "$root/truth.bundle" \
+            --private-key "$root/bundle-private.pem" --key-id "$BUNDLE_KEY_ID" \
+            --role truth --request-id "${{ inputs.request_id }}" --out "$root/private" \
+            > "$root/truth-unpack.result.json" 2> "$root/truth-unpack.stderr.log"
+          node scripts/official-deed-evaluator.mjs verify-truth \
+            --request "$root/request.json" --root "$root/private" \
+            > "$root/truth-verification.json" 2> "$root/truth-verification.stderr.log"
+          rm -f "$root/truth.bundle" "$root/bundle-private.pem"
+
+      - name: Grade the post-seal campaign and preserve fail-safe equivalence
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/deed-evaluator"
+          node private-product/scripts/deed-corpus-run.mjs \
+            --manifest "$root/private/private-manifest.json" \
+            --campaign "${{ inputs.campaign }}" --phase resume \
+            --resume-stage grade --json > "$root/graded-result.json" \
+            2> "$root/product-grade.stderr.log"
+          if test "${{ inputs.mode }}" = fail-safe; then
+            node private-product/scripts/deed-corpus-failsafe.mjs \
+              --manifest "$root/private/private-manifest.json" \
+              --campaign "$root/private" --from-hosted-campaign "${{ inputs.campaign }}" --json \
+              > "$root/fail-safe-summary.json" 2> "$root/fail-safe-summary.stderr.log"
+          fi
+
+      - name: Encrypt all returned evidence to the requester key
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/deed-evaluator"
+          cp "$root/model-receipts.jsonl" "$root/private/runs/${{ inputs.campaign }}/model-receipts.jsonl"
+          cp "$root/attestation-verification.json" "$root/private/runs/${{ inputs.campaign }}/attestation-verification.json"
+          node scripts/official-deed-evaluator.mjs encrypt-evidence \
+            --request "$root/request.json" --root "$root/private" \
+            --out "$root/evidence.bundle" > "$root/encrypted-evidence-receipt.json"
+
+      - name: Upload ciphertext evidence only
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: deed-evaluator-${{ inputs.request_id }}-encrypted-evidence
+          path: ${{ runner.temp }}/deed-evaluator/evidence.bundle
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+      - name: Remove all private plaintext and broker material
+        if: always()
+        run: |
+          set +e
+          root="$RUNNER_TEMP/deed-evaluator"
+          test -f "$root/model-broker.pid" && kill "$(cat "$root/model-broker.pid")" 2>/dev/null
+          rm -rf "$root" "$HOME/.local/bin/.spaceport-model-broker.json" "$HOME/.local/bin/codex" \
+            "$HOME/.local/bin/model-receipt.mjs" "$HOME/.local/bin/model-broker-contract.mjs"

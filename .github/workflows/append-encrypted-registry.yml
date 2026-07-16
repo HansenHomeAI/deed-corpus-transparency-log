@@ -1,0 +1,128 @@
+name: Append encrypted deed corpus custody event
+
+on:
+  workflow_dispatch:
+    inputs:
+      encrypted_request_base64url:
+        description: RSA-OAEP/AES-GCM encrypted append intent (contains no caller nonce or timestamp)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+  artifact-metadata: write
+
+concurrency:
+  group: deed-corpus-encrypted-custody-registry
+  cancel-in-progress: false
+
+jobs:
+  append:
+    environment: deed-corpus-registry
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+
+      - name: Refuse any unprotected or stale workflow ref
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/main
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git fetch --quiet origin refs/heads/main
+          test "$(git rev-parse FETCH_HEAD)" = "$GITHUB_SHA"
+
+      - name: Materialize the request decryption key outside the repository
+        shell: bash
+        env:
+          REQUEST_PRIVATE_KEY_PEM: ${{ secrets.DEED_REGISTRY_REQUEST_PRIVATE_KEY_PEM }}
+        run: |
+          set -euo pipefail
+          umask 077
+          test -n "$REQUEST_PRIVATE_KEY_PEM"
+          printf '%s' "$REQUEST_PRIVATE_KEY_PEM" > "$RUNNER_TEMP/deed-registry-request-private.pem"
+
+      - name: Verify the committed opaque chain before mutation
+        run: node scripts/verify-index.mjs --index registry/index.json --ciphertext-dir registry/ciphertexts
+
+      - name: Decrypt, validate, append, and re-encrypt one event
+        id: append
+        env:
+          REGISTRY_AES_KEY_BASE64: ${{ secrets.DEED_REGISTRY_AES_KEY_BASE64 }}
+          ENCRYPTED_REQUEST_BASE64URL: ${{ inputs.encrypted_request_base64url }}
+          REQUEST_KEY_ID: ${{ vars.DEED_REGISTRY_REQUEST_KEY_ID }}
+          STATE_KEY_ID: ${{ vars.DEED_REGISTRY_STATE_KEY_ID }}
+        run: |
+          set -euo pipefail
+          test -n "$REGISTRY_AES_KEY_BASE64"
+          test -n "$REQUEST_KEY_ID"
+          test -n "$STATE_KEY_ID"
+          APPEND_RESULT="$(node scripts/append-encrypted-registry.mjs \
+            --index registry/index.json \
+            --ciphertext-dir registry/ciphertexts \
+            --request-private-key "$RUNNER_TEMP/deed-registry-request-private.pem" \
+            --request-base64url "$ENCRYPTED_REQUEST_BASE64URL" \
+            --request-key-id "$REQUEST_KEY_ID" \
+            --state-key-id "$STATE_KEY_ID" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --workflow-ref "$GITHUB_WORKFLOW_REF" \
+            --workflow-tip "$GITHUB_SHA" \
+            --receipt-dir "$RUNNER_TEMP/deed-registry-receipt")"
+          REQUEST_SHA256="$(printf '%s' "$APPEND_RESULT" | jq -er .requestSha256)"
+          ARTIFACT_NAME="$(printf '%s' "$APPEND_RESULT" | jq -er .artifactName)"
+          test "$ARTIFACT_NAME" = "deed-registry-receipt-$REQUEST_SHA256"
+          printf 'request_sha256=%s\nartifact_name=%s\n' "$REQUEST_SHA256" "$ARTIFACT_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Verify the complete opaque chain after mutation
+        run: node scripts/verify-index.mjs --index registry/index.json --ciphertext-dir registry/ciphertexts
+
+      - name: Attest the exact encrypted protected append receipt
+        id: receipt_attestation
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: ${{ runner.temp }}/deed-registry-receipt/receipt.encrypted.json
+          show-summary: false
+
+      - name: Retain the exact Sigstore bundle beside the encrypted receipt
+        run: cp '${{ steps.receipt_attestation.outputs.bundle-path }}' "$RUNNER_TEMP/deed-registry-receipt/receipt.sigstore.json"
+
+      - name: Upload replay-addressed encrypted receipt artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ steps.append.outputs.artifact_name }}
+          path: ${{ runner.temp }}/deed-registry-receipt
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+      - name: Attest the exact public index and every retained ciphertext
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: |
+            registry/index.json
+            registry/ciphertexts/*.bin
+
+      - name: Commit and push the serialized append
+        run: |
+          set -euo pipefail
+          git config user.name "deed-corpus-transparency[bot]"
+          git config user.email "deed-corpus-transparency[bot]@users.noreply.github.com"
+          git add registry/index.json registry/ciphertexts
+          git diff --cached --quiet && exit 1
+          git commit -m "registry: append encrypted custody envelope"
+          git push origin HEAD:main
+
+      - name: Remove secret key material
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP/deed-registry-request-private.pem"
+          rm -rf "$RUNNER_TEMP/deed-registry-receipt"
