@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "registryRequest": {
+    "algorithm": "RSA-OAEP-256+A256GCM",
+    "keyId": "deed-registry-request-20260715-8444a5d9",
+    "publicKeyPath": "keys/deed-registry-request-public.pem",
+    "publicKeySha256": "8444a5d9f6cd4c3beaf52a667768dabc275725444c8137ca449f356959d3cda7"
+  },
+  "registryState": {
+    "algorithm": "AES-256-GCM",
+    "keyId": "deed-registry-state-20260715-v1"
+  },
+  "evaluatorBundle": {
+    "algorithm": "RSA-OAEP-256+A256GCM",
+    "keyId": "deed-evaluator-bundle-20260715-68e85a39",
+    "publicKeyPath": "keys/deed-evaluator-bundle-public.pem",
+    "publicKeySha256": "68e85a39d1516e1d12f4f288873890482922802d86607da6df23f5900b601998"
+  }
+}
