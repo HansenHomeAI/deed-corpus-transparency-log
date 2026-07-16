@@ -24,6 +24,14 @@ export const INDEX_LOG = "spaceport-deed-corpus-encrypted-custody-registry";
 export const STATE_REGISTRY = "spaceport-deed-corpus-encrypted-state";
 export const SOURCE_REPOSITORY = "HansenHomeAI/Autodesk-automation";
 
+export class CorpusRegistrySemanticError extends Error {
+  constructor(errors) {
+    super("Encrypted semantic append was rejected by the detailed corpus state machine.");
+    this.name = "CorpusRegistrySemanticError";
+    this.errors = structuredClone(errors);
+  }
+}
+
 const STATE_MAGIC = Buffer.from("DCR2");
 const STATE_FORMAT_VERSION = 1;
 const IV_BYTES = 12;
@@ -368,7 +376,7 @@ export function appendPlaintextEvent(state, intent, authority, now = new Date(),
   }
   const next = appendCorpusRegistryEvent(before, event);
   const checked = validateCorpusRegistry({ registry: next, previousRegistry: before });
-  if (!checked.ok) throw new Error("Encrypted semantic append was rejected by the detailed corpus state machine.");
+  if (!checked.ok) throw new CorpusRegistrySemanticError(checked.errors);
   state.registry = next;
   validatePlaintextRegistry(state);
   return next.events.at(-1);
@@ -429,6 +437,50 @@ export function buildProtectedAppendReceipt({ intent, event, state, authority, p
   return { requestSha256, receipt, encrypted, bytes, encryptedReceiptSha256: sha256(bytes) };
 }
 
+export function buildProtectedAppendRejectionReceipt({ intent, state, authority, publicCommitment, errors, rejectedAt }) {
+  validatePlaintextRegistry(state);
+  validateAuthority(authority);
+  const requestSha256 = sha256(stableJson(intent));
+  const registryValidation = validateCorpusRegistry({ registry: state.registry });
+  if (!registryValidation.ok) throw new Error("Protected rejection receipt cannot bind an invalid corpus registry.");
+  const receipt = {
+    schemaVersion: 1,
+    kind: "spaceport-deed-corpus-protected-append-rejection-receipt",
+    requestSha256,
+    eventType: intent.eventData.eventType,
+    caseId: intent.eventData.caseId,
+    corpusId: intent.eventData.corpusId,
+    errors: structuredClone(errors),
+    registryRootSha256: registryValidation.rootSha256,
+    registryEventCount: registryValidation.eventCount,
+    registry: structuredClone(state.registry),
+    rejectedAt,
+    authority: {
+      repository: authority.repository,
+      workflow: authority.workflow,
+      workflowRef: authority.workflowRef,
+      workflowTip: authority.workflowTip,
+      workflowRunId: authority.workflowRunId,
+      workflowRunAttempt: authority.workflowRunAttempt,
+    },
+    publicCommitment: structuredClone(publicCommitment),
+  };
+  validateProtectedRejectionReceipt(receipt, { expectedRequestSha256: requestSha256,
+    expectedCiphertextSha256: publicCommitment.ciphertextSha256 });
+  const envelopeBase64url = encryptHybridPayload(receipt, intent.response.publicKeyPem, intent.response.keyId,
+    MAX_RECEIPT_BYTES, "Protected rejection receipt exceeds the 32-megabyte limit.");
+  const encrypted = {
+    schemaVersion: 1,
+    kind: "spaceport-deed-corpus-encrypted-append-receipt",
+    algorithm: REQUEST_ALGORITHM,
+    keyId: intent.response.keyId,
+    responseForRequestSha256: requestSha256,
+    envelopeBase64url,
+  };
+  const bytes = Buffer.from(`${JSON.stringify(encrypted, null, 2)}\n`, "utf8");
+  return { requestSha256, receipt, encrypted, bytes, encryptedReceiptSha256: sha256(bytes) };
+}
+
 export function decryptProtectedAppendReceipt(bytes, privateKeyPem, expectedKeyId,
   { expectedRequestSha256, expectedCiphertextSha256, expectedSignerDigest = null } = {}) {
   if (!Buffer.isBuffer(bytes) || bytes.length > MAX_RECEIPT_ARTIFACT_BYTES) {
@@ -447,8 +499,50 @@ export function decryptProtectedAppendReceipt(bytes, privateKeyPem, expectedKeyI
   }
   const receipt = decryptHybridPayload(encrypted.envelopeBase64url, privateKeyPem, expectedKeyId,
     MAX_RECEIPT_BYTES, "Decrypted protected append receipt exceeds the 32-megabyte limit.");
-  validateProtectedReceipt(receipt, { expectedRequestSha256, expectedCiphertextSha256, expectedSignerDigest });
+  if (receipt?.kind === "spaceport-deed-corpus-protected-append-rejection-receipt") {
+    validateProtectedRejectionReceipt(receipt, { expectedRequestSha256, expectedCiphertextSha256, expectedSignerDigest });
+  } else {
+    validateProtectedReceipt(receipt, { expectedRequestSha256, expectedCiphertextSha256, expectedSignerDigest });
+  }
   return receipt;
+}
+
+function validateProtectedRejectionReceipt(receipt,
+  { expectedRequestSha256, expectedCiphertextSha256, expectedSignerDigest = null }) {
+  const fields = new Set([
+    "schemaVersion", "kind", "requestSha256", "eventType", "caseId", "corpusId", "errors",
+    "registryRootSha256", "registryEventCount", "registry", "rejectedAt", "authority", "publicCommitment",
+  ]);
+  const authorityFields = new Set([
+    "repository", "workflow", "workflowRef", "workflowTip", "workflowRunId", "workflowRunAttempt",
+  ]);
+  const commitmentFields = new Set(["sequence", "publicIndexSha256", "envelopeSha256", "ciphertextSha256"]);
+  const authority = receipt?.authority || {};
+  const commitment = receipt?.publicCommitment || {};
+  const checked = validateCorpusRegistry({ registry: receipt?.registry });
+  const errorsValid = Array.isArray(receipt?.errors) && receipt.errors.length > 0
+    && receipt.errors.every((error) => error && typeof error === "object" && !Array.isArray(error)
+      && Object.keys(error).length === 2 && typeof error.code === "string" && error.code.length > 0
+      && typeof error.message === "string" && error.message.length > 0);
+  if (!hasExactKeys(receipt, fields) || !hasExactKeys(authority, authorityFields)
+    || !hasExactKeys(commitment, commitmentFields) || !checked.ok || !errorsValid
+    || receipt.schemaVersion !== 1 || receipt.kind !== "spaceport-deed-corpus-protected-append-rejection-receipt"
+    || receipt.requestSha256 !== expectedRequestSha256 || !CORPUS_EVENT_TYPES.has(receipt.eventType)
+    || (receipt.caseId !== null && !/^dp-[a-f0-9]{12}$/.test(receipt.caseId || ""))
+    || (receipt.corpusId !== null && !/^corpus-[a-f0-9]{16}$/.test(receipt.corpusId || ""))
+    || receipt.registryRootSha256 !== checked.rootSha256 || receipt.registryEventCount !== checked.eventCount
+    || !validIso(receipt.rejectedAt) || authority.repository !== "HansenHomeAI/deed-corpus-transparency-log"
+    || authority.workflow !== ".github/workflows/append-encrypted-registry.yml"
+    || authority.workflowRef
+      !== "HansenHomeAI/deed-corpus-transparency-log/.github/workflows/append-encrypted-registry.yml@refs/heads/main"
+    || !/^[a-f0-9]{40}$/.test(authority.workflowTip || "")
+    || (expectedSignerDigest !== null && authority.workflowTip !== expectedSignerDigest)
+    || !/^[0-9]+$/.test(authority.workflowRunId || "") || !/^[0-9]+$/.test(authority.workflowRunAttempt || "")
+    || !Number.isInteger(commitment.sequence) || commitment.sequence < 1
+    || !SHA256.test(commitment.publicIndexSha256 || "") || !SHA256.test(commitment.envelopeSha256 || "")
+    || !SHA256.test(commitment.ciphertextSha256 || "") || commitment.ciphertextSha256 !== expectedCiphertextSha256) {
+    throw new Error("Protected rejection receipt failed its request, registry, authority, or public commitment binding.");
+  }
 }
 
 function workflowOwnedReceiptFields(event) {
