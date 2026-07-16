@@ -180,7 +180,10 @@ one-day artifact named `deed-registry-receipt-<full request SHA-256>`. The
 artifact's `receipt.encrypted.json` is attested before upload and contains the
 complete resulting detailed registry snapshot only inside its hybrid-encrypted
 payload. Its public wrapper and optional metadata expose only request,
-ciphertext, index, envelope, workflow-run, and encrypted-artifact commitments.
+ciphertext, index, envelope, workflow-run, encrypted-artifact, and plaintext-
+receipt SHA-256 commitments. The attested wrapper's plaintext commitment is
+verified after decryption so a retained decrypted receipt cannot be rewritten
+independently of its protected ciphertext.
 The decrypted receipt is limited to 32 MiB, binds the exact request, appended
 tip event, registry root/count, public ciphertext/index/envelope, workflow
 signer tip, run, timestamps, nonces, and execution certification fields, and

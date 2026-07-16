@@ -404,6 +404,9 @@ test("encrypted append receipts bind consume nonce, execution seal, registry, au
   const consumeEnvelope = readIndex(fixture).envelopes.at(-1);
   const consumeReceipt = decryptReceipt(consumeResult, consumeIntent, consumeEnvelope.ciphertextSha256,
     responseKeys.privateKey, consumeWorkflowTip);
+  const consumeWrapper = JSON.parse(readFileSync(join(consumeResult.receiptDirectory, "receipt.encrypted.json"), "utf8"));
+  assert.equal(consumeWrapper.plaintextReceiptSha256,
+    sha256(Buffer.from(`${JSON.stringify(consumeReceipt)}\n`, "utf8")));
   assert.equal(consumeReceipt.eventType, "consume");
   assert.equal(consumeReceipt.requestSha256, consumeRequestSha256);
   assert.equal(consumeReceipt.eventSha256, latestState(fixture).registry.events.at(-1).eventSha256);
@@ -674,6 +677,12 @@ test("receipt wrong-key, substitution, and caller-protected response fields fail
     Buffer.allocUnsafe((64 * 1024 * 1024) + 1), responseKeys.privateKey, RESPONSE_KEY_ID,
     { expectedRequestSha256: sha256(stableJson(firstIntent)), expectedCiphertextSha256: firstCiphertext }),
   /64-megabyte artifact limit/i);
+  const forgedBinding = JSON.parse(readFileSync(join(firstResult.receiptDirectory, "receipt.encrypted.json"), "utf8"));
+  forgedBinding.plaintextReceiptSha256 = hash("forged-plaintext-receipt");
+  assert.throws(() => decryptProtectedAppendReceipt(
+    Buffer.from(`${JSON.stringify(forgedBinding, null, 2)}\n`), responseKeys.privateKey, RESPONSE_KEY_ID,
+    { expectedRequestSha256: sha256(stableJson(firstIntent)), expectedCiphertextSha256: firstCiphertext }),
+  /does not bind the decrypted receipt bytes/i);
 
   const secondIntent = intentFor(fixture, assignmentBody(1));
   const secondResult = append(fixture, secondIntent, "5002");
