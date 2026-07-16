@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
 import {
@@ -18,6 +18,7 @@ import {
   emptyPublicIndex,
   encryptRequest,
   indexSha256,
+  rejectionPaddedPlaintextBytes,
   sha256,
   validatePublicIndex,
 } from "./registry-core.mjs";
@@ -29,6 +30,7 @@ const verifyScript = join(repository, "scripts/verify-index.mjs");
 const encryptStateScript = join(repository, "scripts/encrypt-state.mjs");
 const decryptStateScript = join(repository, "scripts/decrypt-state.mjs");
 const encryptRequestScript = join(repository, "scripts/encrypt-request.mjs");
+const decryptReceiptScript = join(repository, "scripts/decrypt-receipt.mjs");
 const appendWorkflow = readFileSync(join(repository, ".github/workflows/append-encrypted-registry.yml"), "utf8");
 const migrationWorkflow = readFileSync(join(repository, ".github/workflows/migrate-encrypted-genesis.yml"), "utf8");
 const REQUEST_KEY_ID = "test-request-key-2026-07";
@@ -63,7 +65,7 @@ test("registry workflows refuse non-main or stale refs before loading protected 
 });
 
 test("same-prefix semantic rejection diagnostics have an indistinguishable fixed encrypted size", () => {
-  const build = (kind) => {
+  const buildAfterAssignment = (kind) => {
     const fixture = createFixture();
     const first = assignmentBody(0);
     assert.equal(append(fixture, intentFor(fixture, first), "7101").status, 0);
@@ -75,16 +77,95 @@ test("same-prefix semantic rejection diagnostics have an indistinguishable fixed
     const result = append(fixture, intent, kind === "invalid" ? "7102" : "7103");
     assertEncryptedRejection(result, intent, fixture,
       kind === "invalid" ? "REGISTRY_ASSIGN_INVALID" : "REGISTRY_CROSS_CORPUS_REUSE");
-    return readFileSync(join(result.receiptDirectory, "receipt.encrypted.json"));
+    return { bytes: readFileSync(join(result.receiptDirectory, "receipt.encrypted.json")), fixture, intent, result };
   };
-  const invalid = build("invalid");
-  const duplicate = build("duplicate");
-  assert.equal(invalid.length, duplicate.length);
-  assert.ok(invalid.length > 1024 * 1024);
+  const invalid = buildAfterAssignment("invalid");
+  const duplicate = buildAfterAssignment("duplicate");
+  assert.equal(invalid.bytes.length, duplicate.bytes.length);
+  assert.ok(invalid.bytes.length > 1024 * 1024);
   for (const code of ["REGISTRY_ASSIGN_INVALID", "REGISTRY_CROSS_CORPUS_REUSE"]) {
-    assert.equal(invalid.includes(Buffer.from(code)), false);
-    assert.equal(duplicate.includes(Buffer.from(code)), false);
+    assert.equal(invalid.bytes.includes(Buffer.from(code)), false);
+    assert.equal(duplicate.bytes.includes(Buffer.from(code)), false);
   }
+
+  const pristineBodies = [
+    [assignmentBody(0, { custodyMode: "untrusted" }), "REGISTRY_ASSIGN_INVALID"],
+    [truthBody({ caseId: caseId(0), corpusId: CORPUS_ID, eventSha256: hash("missing") }), "REGISTRY_TRUTH_SEAL_INVALID"],
+    [sourceReleaseBody({ caseId: caseId(0), corpusId: CORPUS_ID }), "REGISTRY_SOURCE_RELEASE_INVALID"],
+    [consumeBody([]), "REGISTRY_CONSUME_INVALID"],
+    [executionBody(hash("missing-consume")), "REGISTRY_EXECUTION_SEAL_INVALID"],
+    [challengeBody(hash("missing-execution")), "REGISTRY_JUDGE_CHALLENGE_INVALID"],
+    [judgeSealBody(hash("missing-challenge")), "REGISTRY_JUDGE_SEAL_INVALID"],
+  ];
+  const pristineSizes = pristineBodies.map(([body, code], offset) => {
+    const fixture = createFixture();
+    const intent = intentFor(fixture, body);
+    const result = append(fixture, intent, String(7300 + offset));
+    assertEncryptedRejection(result, intent, fixture, code);
+    return readFileSync(join(result.receiptDirectory, "receipt.encrypted.json")).length;
+  });
+  assert.equal(new Set(pristineSizes).size, 1);
+
+  const buildMultiError = (multi) => {
+    const fixture = createFixture();
+    const sharedInstrument = hash("padding-shared-instrument");
+    for (let index = 0; index < 2; index += 1) {
+      assert.equal(append(fixture, intentFor(fixture,
+        assignmentBody(index, { instrumentIdHash: sharedInstrument })), String(7400 + index)).status, 0);
+    }
+    const first = latestState(fixture).registry.events.find((event) => event.eventType === "assign");
+    const body = multi
+      ? assignmentBody(2, { instrumentIdHash: sharedInstrument, sourceSha256: first.payload.sourceSha256 })
+      : assignmentBody(2, { custodyMode: "untrusted" });
+    const intent = intentFor(fixture, body);
+    const result = append(fixture, intent, multi ? "7402" : "7403");
+    const receipt = assertEncryptedRejection(result, intent, fixture,
+      multi ? "REGISTRY_INSTRUMENT_REUSE" : "REGISTRY_ASSIGN_INVALID");
+    if (multi) assert.ok(receipt.errors.length >= 2);
+    return readFileSync(join(result.receiptDirectory, "receipt.encrypted.json")).length;
+  };
+  assert.equal(buildMultiError(false), buildMultiError(true));
+
+  const outer = JSON.parse(invalid.bytes.toString("utf8"));
+  const envelope = JSON.parse(Buffer.from(outer.envelopeBase64url, "base64url").toString("utf8"));
+  envelope.ciphertextBase64url = `${envelope.ciphertextBase64url[0] === "A" ? "B" : "A"}${envelope.ciphertextBase64url.slice(1)}`;
+  outer.envelopeBase64url = Buffer.from(JSON.stringify(envelope), "utf8").toString("base64url");
+  const tampered = Buffer.from(`${JSON.stringify(outer, null, 2)}\n`, "utf8");
+  assert.throws(() => decryptProtectedAppendReceipt(tampered, responseKeys.privateKey, RESPONSE_KEY_ID, {
+    expectedRequestSha256: sha256(stableJson(invalid.intent)),
+    expectedCiphertextSha256: readIndex(invalid.fixture).envelopes.at(-1).ciphertextSha256,
+  }), /authentication failed/i);
+
+  assert.equal(rejectionPaddedPlaintextBytes({}), 1024 * 1024);
+  assert.throws(() => rejectionPaddedPlaintextBytes({ padding: "x".repeat(32 * 1024 * 1024) }),
+    /cannot fit its fixed authenticated padding class/);
+});
+
+test("decrypt CLI distinguishes a verified committed append from a verified rejected append", () => {
+  const fixture = createFixture();
+  const successIntent = intentFor(fixture, assignmentBody(0));
+  const success = append(fixture, successIntent, "7201");
+  assert.equal(success.status, 0, success.stderr);
+  const successCiphertext = readIndex(fixture).envelopes.at(-1).ciphertextSha256;
+  const successCli = runDecryptReceiptCli(fixture, success, successIntent, successCiphertext, "success.json");
+  assert.equal(successCli.status, 0, successCli.stderr);
+  assert.deepEqual(JSON.parse(successCli.stdout), {
+    ok: true, verified: true, outcome: "appended", appended: true,
+    output: join(fixture.directory, "success.json"), requestSha256: sha256(stableJson(successIntent)),
+  });
+
+  const assignment = latestState(fixture).registry.events.at(-1);
+  const rejectedIntent = intentFor(fixture, assignmentBody(1, { sourceSha256: assignment.payload.sourceSha256 }));
+  const rejected = append(fixture, rejectedIntent, "7202");
+  assertEncryptedRejection(rejected, rejectedIntent, fixture, "REGISTRY_CROSS_CORPUS_REUSE");
+  const rejectedCli = runDecryptReceiptCli(fixture, rejected, rejectedIntent, successCiphertext, "rejected.json");
+  assert.equal(rejectedCli.status, 2, rejectedCli.stderr);
+  assert.deepEqual(JSON.parse(rejectedCli.stdout), {
+    ok: false, verified: true, outcome: "rejected", appended: false,
+    output: join(fixture.directory, "rejected.json"), requestSha256: sha256(stableJson(rejectedIntent)),
+  });
+  assert.equal(JSON.parse(readFileSync(join(fixture.directory, "rejected.json"), "utf8")).kind,
+    "spaceport-deed-corpus-protected-append-rejection-receipt");
 });
 
 test("encrypted genesis preserves the complete detailed private registry and frozen public anchor prefix", () => {
@@ -721,6 +802,44 @@ function decryptReceipt(result, intent, expectedCiphertextSha256, privateKey = r
   if (expectedSignerDigest !== null) expectations.expectedSignerDigest = expectedSignerDigest;
   return decryptProtectedAppendReceipt(readFileSync(join(result.receiptDirectory, "receipt.encrypted.json")),
     privateKey, RESPONSE_KEY_ID, expectations);
+}
+
+function runDecryptReceiptCli(fixture, result, intent, expectedCiphertextSha256, outputName) {
+  const encryptedReceiptPath = join(result.receiptDirectory, "receipt.encrypted.json");
+  const encryptedReceiptBytes = readFileSync(encryptedReceiptPath);
+  const bundle = { mediaType: "application/vnd.dev.sigstore.bundle+json;version=0.3",
+    verificationMaterial: { tlogEntries: [{ logIndex: "42", integratedTime: "123456" }] } };
+  const response = [{ verificationResult: {
+    signature: { certificate: {
+      issuer: "https://token.actions.githubusercontent.com",
+      githubWorkflowRepository: "HansenHomeAI/deed-corpus-transparency-log",
+      githubWorkflowRef: "refs/heads/main",
+      runnerEnvironment: "github-hosted",
+      buildSignerDigest: "f".repeat(40),
+    } },
+    statement: { subject: [{ digest: { sha256: sha256(encryptedReceiptBytes) } }] },
+    verifiedTimestamps: [{}],
+  }, attestation: { bundle } }];
+  const bin = join(fixture.directory, `fake-gh-${outputName}`);
+  mkdirSync(bin);
+  const fakeGh = join(bin, "gh");
+  writeFileSync(fakeGh, `#!/usr/bin/env node\nprocess.stdout.write(${JSON.stringify(JSON.stringify(response))});\n`);
+  chmodSync(fakeGh, 0o700);
+  const bundlePath = join(fixture.directory, `bundle-${outputName}`);
+  const keyPath = join(fixture.directory, `response-${outputName}.pem`);
+  const output = join(fixture.directory, outputName);
+  writeFileSync(bundlePath, `${JSON.stringify(bundle)}\n`);
+  writeFileSync(keyPath, responseKeys.privateKey, { mode: 0o600 });
+  return spawnSync(process.execPath, [decryptReceiptScript,
+    "--input", encryptedReceiptPath,
+    "--attestation-bundle", bundlePath,
+    "--private-key", keyPath,
+    "--key-id", RESPONSE_KEY_ID,
+    "--expected-request-sha256", sha256(stableJson(intent)),
+    "--expected-ciphertext-sha256", expectedCiphertextSha256,
+    "--expected-signer-digest", "f".repeat(40),
+    "--output", output,
+  ], { encoding: "utf8", env: { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH}` } });
 }
 
 function assertEncryptedRejection(result, intent, fixture, expectedCode) {
