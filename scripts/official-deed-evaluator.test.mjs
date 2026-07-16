@@ -253,6 +253,8 @@ test("workflow statically enforces hosted ordering, credential isolation, pinned
   assert.match(workflow, /unset MODEL_TOKEN GITHUB_TOKEN ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL/);
   assert.match(workflow, /DEED_REGISTRY_RESPONSE_PRIVATE_KEY_PATH: \$\{\{ runner\.temp \}\}\/deed-evaluator\/registry-response-private\.pem/);
   assert.match(workflow, /DEED_REGISTRY_RESPONSE_PUBLIC_KEY_PATH: \$\{\{ runner\.temp \}\}\/deed-evaluator\/registry-response-public\.pem/);
+  assert.match(workflow, /DEED_REGISTRY_REQUEST_PUBLIC_KEY_PATH: \$\{\{ github\.workspace \}\}\/keys\/deed-registry-request-public\.pem/);
+  assert.match(workflow, /DEED_REGISTRY_REQUEST_KEY_ID: deed-registry-request-20260715-8444a5d9/);
   assert.match(workflow, /CODEX_HOME: \$\{\{ runner\.temp \}\}\/deed-evaluator\/empty-codex-home/);
   assert.match(workflow, /install -m 0600 scripts\/model-receipt\.mjs scripts\/model-broker-contract\.mjs "\$HOME\/\.local\/bin\/"/);
   assert.match(workflow, /--model-version 2025-04-14/);

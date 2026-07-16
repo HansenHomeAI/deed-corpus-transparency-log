@@ -189,6 +189,8 @@ jobs:
           MODEL_TOKEN: ${{ github.token }}
           GH_TOKEN: ${{ github.token }}
           CODEX_HOME: ${{ runner.temp }}/deed-evaluator/empty-codex-home
+          DEED_REGISTRY_REQUEST_PUBLIC_KEY_PATH: ${{ github.workspace }}/keys/deed-registry-request-public.pem
+          DEED_REGISTRY_REQUEST_KEY_ID: deed-registry-request-20260715-8444a5d9
           DEED_REGISTRY_RESPONSE_PRIVATE_KEY_PATH: ${{ runner.temp }}/deed-evaluator/registry-response-private.pem
           DEED_REGISTRY_RESPONSE_PUBLIC_KEY_PATH: ${{ runner.temp }}/deed-evaluator/registry-response-public.pem
           DEED_REGISTRY_RESPONSE_KEY_ID: ${{ inputs.request_id }}
