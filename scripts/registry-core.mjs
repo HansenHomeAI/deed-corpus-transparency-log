@@ -40,6 +40,9 @@ const MAX_REQUEST_BYTES = 32 * 1024;
 const MAX_REQUEST_ENVELOPE_CHARS = 60 * 1024;
 const MAX_RECEIPT_BYTES = 32 * 1024 * 1024;
 const MAX_RECEIPT_ARTIFACT_BYTES = 64 * 1024 * 1024;
+const REJECTION_PADDING_BLOCK_BYTES = 1024 * 1024;
+const REJECTION_PADDING_HEADROOM_BYTES = 512 * 1024;
+const PADDED_PAYLOAD_KIND = "spaceport-deed-corpus-padded-payload";
 
 export function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
@@ -468,7 +471,9 @@ export function buildProtectedAppendRejectionReceipt({ intent, state, authority,
   validateProtectedRejectionReceipt(receipt, { expectedRequestSha256: requestSha256,
     expectedCiphertextSha256: publicCommitment.ciphertextSha256 });
   const envelopeBase64url = encryptHybridPayload(receipt, intent.response.publicKeyPem, intent.response.keyId,
-    MAX_RECEIPT_BYTES, "Protected rejection receipt exceeds the 32-megabyte limit.");
+    MAX_RECEIPT_BYTES, "Protected rejection receipt exceeds the 32-megabyte limit.", {
+      paddedPlaintextBytes: rejectionPaddedPlaintextBytes(receipt.registry),
+    });
   const encrypted = {
     schemaVersion: 1,
     kind: "spaceport-deed-corpus-encrypted-append-receipt",
@@ -497,11 +502,18 @@ export function decryptProtectedAppendReceipt(bytes, privateKeyPem, expectedKeyI
     || Buffer.from(bytes).toString("utf8") !== `${JSON.stringify(encrypted, null, 2)}\n`) {
     throw new Error("Encrypted receipt schema, key, request binding, or canonical bytes are invalid.");
   }
-  const receipt = decryptHybridPayload(encrypted.envelopeBase64url, privateKeyPem, expectedKeyId,
-    MAX_RECEIPT_BYTES, "Decrypted protected append receipt exceeds the 32-megabyte limit.");
+  const decrypted = decryptHybridPayload(encrypted.envelopeBase64url, privateKeyPem, expectedKeyId,
+    MAX_RECEIPT_BYTES, "Decrypted protected append receipt exceeds the 32-megabyte limit.", {
+      allowPadded: true, returnPaddingMetadata: true,
+    });
+  const receipt = decrypted.value;
   if (receipt?.kind === "spaceport-deed-corpus-protected-append-rejection-receipt") {
+    if (decrypted.paddedPlaintextBytes !== rejectionPaddedPlaintextBytes(receipt.registry)) {
+      throw new Error("Protected rejection receipt lacks its fixed authenticated padding class.");
+    }
     validateProtectedRejectionReceipt(receipt, { expectedRequestSha256, expectedCiphertextSha256, expectedSignerDigest });
   } else {
+    if (decrypted.paddedPlaintextBytes !== null) throw new Error("Successful protected append receipts must not be padded.");
     validateProtectedReceipt(receipt, { expectedRequestSha256, expectedCiphertextSha256, expectedSignerDigest });
   }
   return receipt;
@@ -707,11 +719,23 @@ export function encryptRequest(intent, publicKeyPem, keyId) {
   return encoded;
 }
 
-function encryptHybridPayload(value, publicKeyPem, keyId, maximumPlaintextBytes, sizeError) {
+function encryptHybridPayload(value, publicKeyPem, keyId, maximumPlaintextBytes, sizeError,
+  { paddedPlaintextBytes = null } = {}) {
   if (!/^[A-Za-z0-9._:-]{1,128}$/.test(keyId || "")) throw new Error("A non-sensitive request key id is required.");
   const requestKey = randomBytes(32);
   const iv = randomBytes(IV_BYTES);
-  const plaintext = Buffer.from(`${JSON.stringify(value)}\n`, "utf8");
+  let plaintext = Buffer.from(`${JSON.stringify(value)}\n`, "utf8");
+  if (paddedPlaintextBytes !== null) {
+    if (!Number.isInteger(paddedPlaintextBytes) || paddedPlaintextBytes < 1 || paddedPlaintextBytes > maximumPlaintextBytes) {
+      throw new Error("Protected receipt padding target is invalid.");
+    }
+    const wrapper = { schemaVersion: 1, kind: PADDED_PAYLOAD_KIND, payload: value, padding: "" };
+    const emptyBytes = Buffer.from(`${JSON.stringify(wrapper)}\n`, "utf8");
+    if (emptyBytes.length > paddedPlaintextBytes) throw new Error(sizeError);
+    wrapper.padding = "0".repeat(paddedPlaintextBytes - emptyBytes.length);
+    plaintext = Buffer.from(`${JSON.stringify(wrapper)}\n`, "utf8");
+    if (plaintext.length !== paddedPlaintextBytes) throw new Error("Protected receipt padding is not exact.");
+  }
   if (plaintext.length > maximumPlaintextBytes) throw new Error(sizeError);
   const cipher = createCipheriv("aes-256-gcm", requestKey, iv);
   const aad = Buffer.from(`${REQUEST_ALGORITHM}:${keyId}`, "utf8");
@@ -737,7 +761,8 @@ export function decryptRequest(encoded, privateKeyPem, expectedKeyId) {
     "Decrypted append request exceeds the 32-kilobyte plaintext limit.");
 }
 
-function decryptHybridPayload(encoded, privateKeyPem, expectedKeyId, maximumPlaintextBytes, sizeError) {
+function decryptHybridPayload(encoded, privateKeyPem, expectedKeyId, maximumPlaintextBytes, sizeError,
+  { allowPadded = false, returnPaddingMetadata = false } = {}) {
   let envelope;
   try {
     const bytes = Buffer.from(encoded || "", "base64url");
@@ -778,10 +803,31 @@ function decryptHybridPayload(encoded, privateKeyPem, expectedKeyId, maximumPlai
   }
   if (plaintext.length > maximumPlaintextBytes) throw new Error(sizeError);
   try {
-    return JSON.parse(plaintext.toString("utf8"));
+    let value = JSON.parse(plaintext.toString("utf8"));
+    let paddedPlaintextBytes = null;
+    if (value?.kind === PADDED_PAYLOAD_KIND) {
+      const fields = new Set(["schemaVersion", "kind", "payload", "padding"]);
+      if (!allowPadded || !hasExactKeys(value, fields) || value.schemaVersion !== 1
+        || typeof value.padding !== "string" || !/^0*$/.test(value.padding)) {
+        throw new Error("invalid padded payload");
+      }
+      paddedPlaintextBytes = plaintext.length;
+      value = value.payload;
+    }
+    return returnPaddingMetadata ? { value, paddedPlaintextBytes } : value;
   } catch {
     throw new Error("Decrypted append request is not valid JSON.");
   }
+}
+
+function rejectionPaddedPlaintextBytes(registry) {
+  const registryBytes = Buffer.byteLength(JSON.stringify(registry || {}), "utf8");
+  const target = Math.ceil((registryBytes + REJECTION_PADDING_HEADROOM_BYTES) / REJECTION_PADDING_BLOCK_BYTES)
+    * REJECTION_PADDING_BLOCK_BYTES;
+  if (target < 1 || target > MAX_RECEIPT_BYTES) {
+    throw new Error("Protected rejection receipt cannot fit its fixed authenticated padding class.");
+  }
+  return target;
 }
 
 function isCanonicalBase64url(value) {
