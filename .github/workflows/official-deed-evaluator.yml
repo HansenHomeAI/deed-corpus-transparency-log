@@ -194,6 +194,7 @@ jobs:
           DEED_REGISTRY_RESPONSE_PRIVATE_KEY_PATH: ${{ runner.temp }}/deed-evaluator/registry-response-private.pem
           DEED_REGISTRY_RESPONSE_PUBLIC_KEY_PATH: ${{ runner.temp }}/deed-evaluator/registry-response-public.pem
           DEED_REGISTRY_RESPONSE_KEY_ID: ${{ inputs.request_id }}
+          DEED_REGISTRY_PREFLIGHT_EVIDENCE_PATH: ${{ runner.temp }}/deed-evaluator/private/registry-evidence/preflight-receipt.json
         run: |
           set -euo pipefail
           root="$RUNNER_TEMP/deed-evaluator"

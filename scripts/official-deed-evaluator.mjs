@@ -13,6 +13,14 @@ import {
 } from "./official-evaluator-core.mjs";
 
 const command = process.argv[2];
+const REGISTRY_PREFLIGHT_PATH = "registry-evidence/preflight-receipt.json";
+const REGISTRY_PREFLIGHT_FILES = [
+  ["encryptedReceiptPath", "encryptedReceiptSha256", "receipt.encrypted.json"],
+  ["bundlePath", "bundleSha256", "receipt.sigstore.json"],
+  ["metadataPath", "metadataSha256", "receipt-metadata.json"],
+  ["decryptedReceiptPath", "decryptedReceiptSha256", "receipt.decrypted.private.json"],
+  ["publicIndexPath", "publicIndexFileSha256", "public-index.json"],
+];
 if (command === "write-request") {
   const request = validateEvaluationRequest({
     schemaVersion: 1,
@@ -67,7 +75,10 @@ if (command === "write-request") {
     try { readFileSync(truth); throw new Error("Truth bytes were mounted during the source-only execution phase."); }
     catch (error) { if (error?.code !== "ENOENT") throw error; }
   }
-  const expected = new Set(["private-manifest.json", ...manifest.entries.map((entry) => entry.source.path)]);
+  verifyRegistryPreflightSource(root, manifest, request.mode);
+  const expected = new Set(["private-manifest.json", REGISTRY_PREFLIGHT_PATH,
+    ...REGISTRY_PREFLIGHT_FILES.map((record) => `registry-evidence/${record[2]}`),
+    ...manifest.entries.map((entry) => entry.source.path)]);
   if (request.mode === "final") expected.add("intake-seal.json");
   verifyMaterializedRole(root, "source", request.requestId, expected);
   process.stdout.write(`${JSON.stringify({ ok: true, manifestPath, cohort: manifest.cohort, entries: manifest.entries.length, truthMounted: false })}\n`);
@@ -133,6 +144,35 @@ function privatePath(root, value) {
   const path = resolve(root, value);
   if (path === root || !path.startsWith(`${root}${sep}`)) throw new Error("Manifest private path escaped the evaluation root.");
   return path;
+}
+function verifyRegistryPreflightSource(root, manifest, mode) {
+  const wrapper = JSON.parse(readFileSync(privatePath(root, REGISTRY_PREFLIGHT_PATH), "utf8"));
+  const evidence = wrapper?.registryEvidence || wrapper;
+  const expectedType = mode === "final" ? "source-release" : "truth-seal";
+  const expectedHashes = manifest?.registry?.[mode === "final"
+    ? "sourceReleaseEventSha256s" : "truthSealEventSha256s"];
+  const receipt = evidence?.receipt;
+  const events = receipt?.registry?.events;
+  const matches = Array.isArray(events)
+    ? events.filter((event) => event?.eventType === expectedType && event?.corpusId === manifest.corpusId) : [];
+  if (evidence?.kind !== "spaceport-deed-encrypted-registry-evidence"
+    || evidence.eventType !== expectedType || receipt?.eventType !== expectedType
+    || evidence.eventSha256 !== receipt?.eventSha256 || !/^[a-f0-9]{64}$/.test(evidence.eventSha256 || "")
+    || !Array.isArray(expectedHashes) || !expectedHashes.includes(evidence.eventSha256)
+    || matches.at(-1)?.eventSha256 !== evidence.eventSha256
+    || evidence.registryRootSha256 !== manifest?.registry?.rootSha256
+    || receipt?.registryRootSha256 !== manifest?.registry?.rootSha256
+    || evidence.registryEventCount !== manifest?.registry?.eventCount
+    || receipt?.registryEventCount !== manifest?.registry?.eventCount) {
+    throw new Error("Registry preflight receipt is not the latest exact protected snapshot bound by the manifest.");
+  }
+  for (const [pathField, hashField, name] of REGISTRY_PREFLIGHT_FILES) {
+    if (evidence.files?.[pathField] !== name || !/^[a-f0-9]{64}$/.test(evidence.files?.[hashField] || "")) {
+      throw new Error("Registry preflight retained-file declaration is invalid or non-portable.");
+    }
+    const bytes = readFileSync(privatePath(root, `registry-evidence/${name}`));
+    if (sha256(bytes) !== evidence.files[hashField]) throw new Error("Registry preflight retained bytes fail their commitment.");
+  }
 }
 function listFiles(root) {
   return readdirSync(root, { withFileTypes: true }).flatMap((entry) => {

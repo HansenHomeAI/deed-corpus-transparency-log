@@ -188,18 +188,25 @@ test("source verification proves all truth paths absent, then truth verification
     caseId: `case-${index}`, expectedOutcome: "positive", source: { path: "sources/one.pdf", sha256: sha256(source), bytes: source.length },
     truth: { path: "truth/one.json", sha256: sha256(truth), bytes: truth.length },
   }));
-  writeFileSync(join(root, "private-manifest.json"), JSON.stringify({ cohort: "final", codeTip: request.productCodeTip, entries }));
-  writeRoleReceipt(root, "source", ["private-manifest.json", "intake-seal.json", "sources/one.pdf"]);
+  const corpusId = "corpus-0123456789abcdef";
+  const registryRootSha256 = sha256("registry-root");
+  const releaseEventSha256 = sha256("source-release-event");
+  const manifest = { cohort: "final", corpusId, codeTip: request.productCodeTip, entries,
+    registry: { rootSha256: registryRootSha256, eventCount: 1, sourceReleaseEventSha256s: [releaseEventSha256] } };
+  writeFileSync(join(root, "private-manifest.json"), JSON.stringify(manifest));
+  const registryPaths = writeRegistryPreflight(root, { corpusId, registryRootSha256, eventSha256: releaseEventSha256 });
+  const sourceRolePaths = ["private-manifest.json", "intake-seal.json", "sources/one.pdf", ...registryPaths];
+  writeRoleReceipt(root, "source", sourceRolePaths);
   const requestPath = join(root, "request.json"); writeFileSync(requestPath, JSON.stringify(request));
   let child = spawnEvaluator(["verify-source", "--request", requestPath, "--root", root]);
   assert.equal(child.status, 0, child.stderr);
   writeFileSync(join(root, "unlisted-truth.txt"), "hidden");
-  writeRoleReceipt(root, "source", ["private-manifest.json", "intake-seal.json", "sources/one.pdf", "unlisted-truth.txt"]);
+  writeRoleReceipt(root, "source", [...sourceRolePaths, "unlisted-truth.txt"]);
   child = spawnEvaluator(["verify-source", "--request", requestPath, "--root", root]);
   assert.notEqual(child.status, 0);
   rmSync(join(root, "unlisted-truth.txt"));
   rmSync(join(root, ".source-fileset-receipt.json"));
-  writeRoleReceipt(root, "source", ["private-manifest.json", "intake-seal.json", "sources/one.pdf"]);
+  writeRoleReceipt(root, "source", sourceRolePaths);
   mkdirSync(join(root, "truth")); writeFileSync(join(root, "truth", "one.json"), truth);
   writeRoleReceipt(root, "truth", ["truth/one.json"]);
   child = spawnEvaluator(["verify-source", "--request", requestPath, "--root", root]);
@@ -255,6 +262,7 @@ test("workflow statically enforces hosted ordering, credential isolation, pinned
   assert.match(workflow, /DEED_REGISTRY_RESPONSE_PUBLIC_KEY_PATH: \$\{\{ runner\.temp \}\}\/deed-evaluator\/registry-response-public\.pem/);
   assert.match(workflow, /DEED_REGISTRY_REQUEST_PUBLIC_KEY_PATH: \$\{\{ github\.workspace \}\}\/keys\/deed-registry-request-public\.pem/);
   assert.match(workflow, /DEED_REGISTRY_REQUEST_KEY_ID: deed-registry-request-20260715-8444a5d9/);
+  assert.match(workflow, /DEED_REGISTRY_PREFLIGHT_EVIDENCE_PATH: \$\{\{ runner\.temp \}\}\/deed-evaluator\/private\/registry-evidence\/preflight-receipt\.json/);
   assert.match(workflow, /CODEX_HOME: \$\{\{ runner\.temp \}\}\/deed-evaluator\/empty-codex-home/);
   assert.match(workflow, /install -m 0600 scripts\/model-receipt\.mjs scripts\/model-broker-contract\.mjs "\$HOME\/\.local\/bin\/"/);
   assert.match(workflow, /--model-version 2025-04-14/);
@@ -287,6 +295,32 @@ test("workflow statically enforces hosted ordering, credential isolation, pinned
 
 function spawnEvaluator(args) {
   return spawnSync(process.execPath, [evaluator, ...args], { encoding: "utf8", env: { ...process.env, ...hostedEnv } });
+}
+
+function writeRegistryPreflight(root, { corpusId, registryRootSha256, eventSha256 }) {
+  const directory = join(root, "registry-evidence");
+  mkdirSync(directory, { recursive: true });
+  const declarations = [
+    ["encryptedReceiptPath", "encryptedReceiptSha256", "receipt.encrypted.json"],
+    ["bundlePath", "bundleSha256", "receipt.sigstore.json"],
+    ["metadataPath", "metadataSha256", "receipt-metadata.json"],
+    ["decryptedReceiptPath", "decryptedReceiptSha256", "receipt.decrypted.private.json"],
+    ["publicIndexPath", "publicIndexFileSha256", "public-index.json"],
+  ];
+  const files = {};
+  for (const [pathField, hashField, name] of declarations) {
+    const bytes = Buffer.from(`retained-${name}\n`);
+    writeFileSync(join(directory, name), bytes);
+    files[pathField] = name;
+    files[hashField] = sha256(bytes);
+  }
+  const event = { eventType: "source-release", corpusId, eventSha256 };
+  const receipt = { eventType: "source-release", eventSha256, registryRootSha256,
+    registryEventCount: 1, registry: { events: [event] } };
+  const registryEvidence = { kind: "spaceport-deed-encrypted-registry-evidence", eventType: "source-release",
+    eventSha256, registryRootSha256, registryEventCount: 1, receipt, files };
+  writeFileSync(join(directory, "preflight-receipt.json"), JSON.stringify({ registryEvidence }));
+  return ["registry-evidence/preflight-receipt.json", ...declarations.map((record) => `registry-evidence/${record[2]}`)];
 }
 
 function writeRoleReceipt(root, role, paths) {
