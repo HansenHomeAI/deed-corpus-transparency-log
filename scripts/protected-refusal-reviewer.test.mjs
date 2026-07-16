@@ -62,7 +62,8 @@ test("two approving systems must agree on source-visible property identity", () 
   assert.match(result.propertyIdentityEvidenceSha256, /^[a-f0-9]{64}$/);
   assert.match(result.propertyGroupSha256, /^[a-f0-9]{64}$/);
   const changed = structuredClone(right.propertyIdentity); changed.parcel = "99:999:9999";
-  assert.throws(() => reconcilePropertyIdentity(left.propertyIdentity, changed), /disagreed/);
+  changed.recordingInstrument = "ENTRY 99999"; changed.tract = "TRACT Z";
+  assert.throws(() => reconcilePropertyIdentity(left.propertyIdentity, changed), /no stable source-visible property identifier/);
 });
 
 test("review index enforces call, session, provider, returned-model, challenge, and property-group uniqueness", () => {

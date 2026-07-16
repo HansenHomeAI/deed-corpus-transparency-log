@@ -218,12 +218,19 @@ export function reconcilePropertyIdentity(left, right) {
   const identityFields = ["county", "recordingInstrument", "subdivision", "lot", "block", "parcel", "tract"];
   const leftKey = Object.fromEntries(identityFields.map((field) => [field, left[field]]));
   const rightKey = Object.fromEntries(identityFields.map((field) => [field, right[field]]));
-  if (stableJson(leftKey) !== stableJson(rightKey)) throw new Error("Independent reviewers disagreed on protected property identity.");
-  const evidence = { identity: leftKey, reviewerCitations: [left.citations, right.citations] };
+  const agreedIdentity = Object.fromEntries(identityFields.map((field) => [field,
+    leftKey[field] !== null && leftKey[field] === rightKey[field] ? leftKey[field] : null]));
+  const propertySpecific = ["recordingInstrument", "subdivision", "lot", "block", "parcel", "tract"];
+  if (!propertySpecific.some((field) => agreedIdentity[field] !== null)) {
+    throw new Error("Independent reviewers share no stable source-visible property identifier.");
+  }
+  const evidence = { reviewerIdentities: [leftKey, rightKey], agreedIdentity,
+    reviewerCitations: [left.citations, right.citations] };
   return {
     propertyIdentityEvidence: evidence,
     propertyIdentityEvidenceSha256: sha256(stableJson(evidence)),
-    propertyGroupSha256: sha256(stableJson({ schemaVersion: 1, kind: "source-visible-property-group", identity: leftKey })),
+    propertyGroupSha256: sha256(stableJson({ schemaVersion: 1, kind: "source-visible-property-group",
+      identity: agreedIdentity })),
   };
 }
 
