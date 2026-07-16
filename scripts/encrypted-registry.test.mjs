@@ -203,6 +203,28 @@ test("source-release callers cannot assert any state-derived custody field and v
   });
 });
 
+test("the first protected source release freezes a corpus and every later case inherits that exact freeze", () => {
+  const fixture = createFixture();
+  assert.equal(append(fixture, intentFor(fixture, assignmentBody(0, { split: "final" })), "3101").status, 0);
+  const firstAssignment = latestState(fixture).registry.events.at(-1);
+  assert.equal(append(fixture, intentFor(fixture, assignmentBody(1, { split: "final" })), "3102").status, 0);
+  const secondAssignment = latestState(fixture).registry.events.at(-1);
+  assert.equal(append(fixture, intentFor(fixture, assignmentBody(2, { split: "final" })), "3103").status, 0);
+  const thirdAssignment = latestState(fixture).registry.events.at(-1);
+
+  assert.equal(append(fixture, intentFor(fixture, sourceReleaseBody(firstAssignment)), "3104").status, 0);
+  const firstRelease = latestState(fixture).registry.events.at(-1);
+  assert.equal(firstRelease.payload.frozenAt, firstRelease.issuedAt);
+  assert.equal(append(fixture, intentFor(fixture, sourceReleaseBody(secondAssignment)), "3105").status, 0);
+  const secondRelease = latestState(fixture).registry.events.at(-1);
+  assert.equal(secondRelease.payload.frozenAt, firstRelease.payload.frozenAt);
+  assert.equal(secondRelease.payload.releasedAt, secondRelease.issuedAt);
+
+  const differentProduct = append(fixture, intentFor(fixture,
+    sourceReleaseBody(thirdAssignment, { productCodeTip: "b".repeat(40) })), "3106");
+  assert.notEqual(differentProduct.status, 0);
+});
+
 test("execution and judge events cannot precede their consumed, sealed, and challenged evidence", () => {
   const executionFixture = createFixture();
   const execution = append(executionFixture, intentFor(executionFixture, executionBody(hash("missing-consume"))));
@@ -675,12 +697,17 @@ function finalConsumedRegistry() {
   let registry = quarantineRegistry([{ caseId: "legacy-final", sourceSha256: hash("legacy-final-source") }]);
   const assignments = [];
   for (let index = 0; index < 50; index += 1) {
-    registry = appendCorpusRegistryEvent(registry, withIssued(assignmentBody(index, { split: "final" }), iso(index * 3 + 1)));
+    registry = appendCorpusRegistryEvent(registry, withIssued(assignmentBody(index, { split: "final" }), iso(index * 2 + 1)));
     const assignment = registry.events.at(-1);
     assignments.push(assignment);
     registry = appendCorpusRegistryEvent(registry,
-      withIssued(truthBody(assignment, { reviewSealedAt: iso(index * 3 + 2) }), iso(index * 3 + 2)));
-    registry = appendCorpusRegistryEvent(registry, withIssued(canonicalReleaseBody(assignment, iso(index * 3 + 3)), iso(index * 3 + 3)));
+      withIssued(truthBody(assignment, { reviewSealedAt: iso(index * 2 + 2) }), iso(index * 2 + 2)));
+  }
+  const frozenAt = iso(101);
+  for (let index = 0; index < assignments.length; index += 1) {
+    const releasedAt = iso(101 + index);
+    registry = appendCorpusRegistryEvent(registry,
+      withIssued(canonicalReleaseBody(assignments[index], releasedAt, frozenAt), releasedAt));
   }
   const consumedAt = iso(201);
   registry = appendCorpusRegistryEvent(registry, {
@@ -692,13 +719,13 @@ function finalConsumedRegistry() {
   assert.equal(validateCorpusRegistry({ registry }).ok, true);
   return { registry, consume: registry.events.at(-1) };
 }
-function canonicalReleaseBody(assignment, issuedAt) {
+function canonicalReleaseBody(assignment, issuedAt, frozenAt = issuedAt) {
   return { eventType: "source-release", caseId: assignment.caseId, corpusId: assignment.corpusId, payload: {
     productCodeTip: "a".repeat(40), assignmentEventSha256: assignment.eventSha256,
     sourceSha256: assignment.payload.sourceSha256,
     encryptedSourceBundleRootSha256: assignment.payload.encryptedSourceBundleRootSha256,
     custodianIdentitySha256: assignment.payload.custodianIdentitySha256, priorReleaseCount: 0,
-    frozenAt: issuedAt, releaseTarget: "official-challenged-runner",
+    frozenAt, releaseTarget: "official-challenged-runner",
     releaseAuthority: "protected-custodian-workflow", releasedAt: issuedAt,
   } };
 }

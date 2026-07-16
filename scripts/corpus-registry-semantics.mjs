@@ -159,6 +159,7 @@ function validateSourceRelease(event, at, context) {
   const { errors, assignments, sourceReleases } = context;
   const assignment = assignments.get(event.caseId);
   const payload = event.payload || {};
+  const cohortRelease = [...sourceReleases.values()].find((candidate) => candidate.corpusId === event.corpusId);
   if (!assignment || sourceReleases.has(event.caseId) || event.corpusId !== assignment.corpusId
     || assignment.payload?.split !== "final" || assignment.payload?.custodyMode !== "exclusive-custodian"
     || payload.assignmentEventSha256 !== assignment.eventSha256
@@ -169,6 +170,9 @@ function validateSourceRelease(event, at, context) {
     || payload.priorReleaseCount !== 0 || payload.releaseTarget !== "official-challenged-runner"
     || payload.releaseAuthority !== "protected-custodian-workflow" || !validIso(payload.releasedAt)
     || payload.releasedAt !== event.issuedAt || Date.parse(payload.releasedAt) < Date.parse(payload.frozenAt)
+    || (cohortRelease && (payload.frozenAt !== cohortRelease.payload?.frozenAt
+      || payload.productCodeTip !== cohortRelease.payload?.productCodeTip))
+    || (!cohortRelease && payload.frozenAt !== event.issuedAt)
     || event.sequence <= assignment.sequence) {
     errors.push(failure("REGISTRY_SOURCE_RELEASE_INVALID", `${at} is not a zero-prior-release exclusive-custody handoff after product freeze`));
     return;

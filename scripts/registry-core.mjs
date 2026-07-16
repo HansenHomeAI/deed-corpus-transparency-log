@@ -314,6 +314,8 @@ export function appendPlaintextEvent(state, intent, authority, now = new Date(),
   if (event.eventType === "source-release") {
     const assignment = [...before.events].reverse().find((candidate) => candidate.eventType === "assign"
       && candidate.caseId === event.caseId && candidate.corpusId === event.corpusId);
+    const cohortRelease = before.events.find((candidate) => candidate.eventType === "source-release"
+      && candidate.corpusId === event.corpusId);
     const priorReleaseCount = before.events.filter((candidate) => candidate.eventType === "source-release"
       && candidate.caseId === event.caseId && candidate.corpusId === event.corpusId).length;
     event.payload = {
@@ -323,7 +325,11 @@ export function appendPlaintextEvent(state, intent, authority, now = new Date(),
       encryptedSourceBundleRootSha256: assignment?.payload?.encryptedSourceBundleRootSha256,
       custodianIdentitySha256: assignment?.payload?.custodianIdentitySha256,
       priorReleaseCount,
-      frozenAt: event.issuedAt,
+      // The first protected handoff freezes the cohort. Every later case in
+      // that corpus inherits the same workflow-owned freeze timestamp, so a
+      // multi-case manifest has one canonical freeze without trusting caller
+      // chronology.
+      frozenAt: cohortRelease?.payload?.frozenAt || event.issuedAt,
       releaseTarget: "official-challenged-runner",
       releaseAuthority: "protected-custodian-workflow",
       releasedAt: event.issuedAt,
@@ -500,7 +506,9 @@ function validateProtectedReceipt(receipt, { expectedRequestSha256, expectedCiph
     throw new Error("Protected judge receipt lacks its workflow nonce or timestamp.");
   }
   if (receipt.eventType === "source-release"
-    && (receipt.workflowOwned?.frozenAt !== receipt.issuedAt || receipt.workflowOwned?.releasedAt !== receipt.issuedAt)) {
+    && (!validIso(receipt.workflowOwned?.frozenAt)
+      || Date.parse(receipt.workflowOwned.frozenAt) > Date.parse(receipt.issuedAt)
+      || receipt.workflowOwned?.releasedAt !== receipt.issuedAt)) {
     throw new Error("Protected release receipt lacks its workflow timestamps.");
   }
   if (receipt.eventType === "execution-seal") {
