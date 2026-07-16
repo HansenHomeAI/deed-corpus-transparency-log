@@ -1,5 +1,17 @@
 {
   "schemaVersion": 2,
   "log": "spaceport-deed-corpus-encrypted-custody-registry",
-  "envelopes": []
+  "envelopes": [
+    {
+      "sequence": 1,
+      "previousEnvelopeSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "ciphertextSha256": "8f3346921d72fedf47d22bd078396eab68cb573299db19e841c6650c0b4566fa",
+      "ciphertextBytes": 25524,
+      "algorithm": "AES-256-GCM",
+      "keyId": "deed-registry-state-20260715-v1",
+      "issuedAt": "2026-07-16T00:28:11.016Z",
+      "workflowRunId": "29461509077",
+      "envelopeSha256": "f68072fb9bbc7b96cbda87e51b57297797d6e02528ebe91e22db2259b4258922"
+    }
+  ]
 }
