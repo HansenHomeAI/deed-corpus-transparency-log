@@ -310,7 +310,7 @@ export function buildPropertyIdentifierCommitments(identity) {
 }
 
 export function canonicalizePropertyIdentifier(field, value) {
-  let text = normalizeOriginal(value).toUpperCase().replace(/&/g, " AND ");
+  let text = foldCanonicalLatin(normalizeOriginal(value)).toUpperCase().replace(/&/g, " AND ");
   // Semantic labels are punctuation-insensitive, while replacing punctuation with spaces preserves the
   // component boundaries later used to distinguish 1-2 from 12 and AB-CD from ABCD.
   text = text.replace(/[’']/g, "").replace(/[\p{P}\p{S}]+/gu, " ").trim().replace(/\s+/g, " ");
@@ -325,7 +325,8 @@ export function canonicalizePropertyIdentifier(field, value) {
   if (field === "parcel") text = text.replace(/^\s*(PARCEL\s+ID|PARCEL|APN|TAX\s+ID)\s*(NUMBER|NO)?\s*/i, "");
   let pieces = text.match(/[A-Z]+|[0-9]+/g) || [];
   if (field === "subdivision") pieces = normalizeSubdivisionNumerals(pieces);
-  if (["lot", "block", "tract", "parcel"].includes(field)) pieces = normalizeTypedIdentifierNumerals(pieces);
+  if (["lot", "block", "tract", "parcel"].includes(field)) pieces = normalizeTypedIdentifierNumerals(pieces,
+    { allowRoman: ["lot", "block"].includes(field) && pieces.length === 1 });
   return pieces.map((piece) => /^[0-9]+$/.test(piece) ? String(BigInt(piece)) : piece).join("-") || null;
 }
 
@@ -334,22 +335,22 @@ function normalizeSubdivisionNumerals(pieces) {
   for (let index = 0; index < pieces.length; index += 1) {
     const piece = pieces[index]; result.push(piece);
     if (!contexts.has(piece) || index + 1 >= pieces.length) continue;
-    const numeral = identifierNumeralAt(pieces, index + 1, { allowSingleRoman: true });
+    const numeral = identifierNumeralAt(pieces, index + 1, { allowRoman: true, allowSingleRoman: true });
     if (numeral) { result.push(numeral.value); index += numeral.consumed; }
   }
   return result;
 }
 
-function normalizeTypedIdentifierNumerals(pieces) {
+function normalizeTypedIdentifierNumerals(pieces, { allowRoman }) {
   const result = [];
   for (let index = 0; index < pieces.length; index += 1) {
-    const numeral = identifierNumeralAt(pieces, index, { allowSingleRoman: false });
+    const numeral = identifierNumeralAt(pieces, index, { allowRoman, allowSingleRoman: false });
     if (numeral) { result.push(numeral.value); index += numeral.consumed - 1; } else result.push(pieces[index]);
   }
   return result;
 }
 
-function identifierNumeralAt(pieces, index, { allowSingleRoman }) {
+function identifierNumeralAt(pieces, index, { allowRoman, allowSingleRoman }) {
   const piece = pieces[index];
   if (TENS_WORDS.has(piece)) {
     const next = NUMBER_WORDS.get(pieces[index + 1]);
@@ -357,10 +358,18 @@ function identifierNumeralAt(pieces, index, { allowSingleRoman }) {
       consumed: Number.isInteger(next) && next > 0 && next < 10 ? 2 : 1 };
   }
   if (NUMBER_WORDS.has(piece)) return { value: String(NUMBER_WORDS.get(piece)), consumed: 1 };
-  if (/^[IVXLCDM]+$/.test(piece) && (allowSingleRoman || piece.length > 1)) {
+  if (allowRoman && /^[IVXLCDM]+$/.test(piece) && (allowSingleRoman || piece.length > 1)) {
     const value = parseCanonicalRoman(piece); if (value !== null) return { value: String(value), consumed: 1 };
   }
   return null;
+}
+
+function foldCanonicalLatin(value) {
+  const nondecomposing = new Map([["Æ", "AE"], ["æ", "ae"], ["Œ", "OE"], ["œ", "oe"], ["Ø", "O"], ["ø", "o"],
+    ["Ł", "L"], ["ł", "l"], ["Đ", "D"], ["đ", "d"], ["Ð", "D"], ["ð", "d"], ["Þ", "TH"], ["þ", "th"],
+    ["ı", "i"], ["ß", "ss"], ["Ŧ", "T"], ["ŧ", "t"]]);
+  return [...value.replace(/[\u02bb\u02bc]/giu, "").normalize("NFKD").replace(/\p{M}+/gu, "")]
+    .map((character) => nondecomposing.get(character) || character).join("");
 }
 
 function parseCanonicalRoman(value) {

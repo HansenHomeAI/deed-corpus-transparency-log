@@ -39,11 +39,13 @@ test("property canonicalization handles common labels without collapsing segment
     ["block", "Block IV", "Block 4"],
     ["tract", "Tract Twenty One B", "Tract 21 B"],
     ["parcel", "Parcel Twenty-One B", "Parcel 21 B"],
+    ["county", "Doña Ana County", "Dona Ana County"],
+    ["county", "Hawaiʻi County", "Hawaii County"],
+    ["subdivision", "Peña Blanca Subdivision", "Pena Blanca Subdivision"],
     ["county", "【Utah County，】", "Utah County"],
     ["subdivision", "[Sunset Subdivision];", "Sunset Subdivision"],
     ["lot", "Lot: 7.", "Lot 7"],
     ["block", "Block—2", "Block 2"],
-    ["tract", "Tract (VII).", "Tract 7"],
     ["parcel", "Parcel ID：001-02；", "APN 1-2"],
   ]) assert.equal(canonicalizePropertyIdentifier(field, left), canonicalizePropertyIdentifier(field, right), `${field} variant`);
   assert.notEqual(canonicalizePropertyIdentifier("parcel", "Parcel ID 001-02"),
@@ -52,6 +54,16 @@ test("property canonicalization handles common labels without collapsing segment
     canonicalizePropertyIdentifier("parcel", "Parcel 12"), "internal numeric separators retain component boundaries");
   assert.notEqual(canonicalizePropertyIdentifier("parcel", "Parcel AB/CD"),
     canonicalizePropertyIdentifier("parcel", "Parcel ABCD"), "internal alphabetic separators retain component boundaries");
+  assert.notEqual(canonicalizePropertyIdentifier("parcel", "Parcel AB/CD"),
+    canonicalizePropertyIdentifier("parcel", "Parcel AB/400"), "Roman-looking parcel components remain literal");
+  assert.notEqual(canonicalizePropertyIdentifier("parcel", "Parcel CD"),
+    canonicalizePropertyIdentifier("parcel", "Parcel 400"), "whole parcel identifiers are never reinterpreted as Roman numerals");
+  assert.notEqual(canonicalizePropertyIdentifier("tract", "Tract VII"),
+    canonicalizePropertyIdentifier("tract", "Tract 7"), "tract identifiers are never reinterpreted as Roman numerals");
+  assert.notEqual(canonicalizePropertyIdentifier("lot", "Lot VII-A"),
+    canonicalizePropertyIdentifier("lot", "Lot 7-A"), "multi-segment lot identifiers do not reinterpret Roman-looking components");
+  assert.notEqual(canonicalizePropertyIdentifier("county", "Dona Ana County"),
+    canonicalizePropertyIdentifier("county", "Donna Ana County"), "Latin folding does not collapse distinct spelling");
   assert.notEqual(canonicalizePropertyIdentifier("subdivision", "Silver One Lake"),
     canonicalizePropertyIdentifier("subdivision", "Silver 1 Lake"), "proper-name number words are not globally rewritten");
   assert.notEqual(canonicalizePropertyIdentifier("lot", "Lot One Two"),
@@ -199,6 +211,34 @@ test("review index enforces call, session, provider, returned-model, challenge, 
   assert.throws(() => buildReviewIndex({ request, challengeSha256: challenge, catalogSha256: hash("catalog"),
     cases: [punctuationBase, punctuationReplay], hosted }), /alias replay is not unique/,
   "ordinary and Unicode surrounding punctuation must not bypass duplicate-index rejection");
+  const accentedProperty = reconcilePropertyIdentity({ ...numericIdentity, county: "Doña Ana County",
+    subdivision: "Sunset Subdivision", lot: "Lot 7", block: "Block 2" },
+  { ...numericIdentity, county: "Doña Ana County", subdivision: "Sunset Subdivision", lot: "Lot 7", block: "Block 2" });
+  const asciiProperty = reconcilePropertyIdentity({ ...numericIdentity, county: "Dona Ana County",
+    subdivision: "Sunset Subdivision", lot: "Lot 7", block: "Block 2" },
+  { ...numericIdentity, county: "Dona Ana County", subdivision: "Sunset Subdivision", lot: "Lot 7", block: "Block 2" });
+  const accentBase = { ...structuredClone(caseResult), propertyAliases: accentedProperty.propertyAliases,
+    propertyIdentifierCommitments: accentedProperty.propertyIdentifierCommitments };
+  const accentReplay = nextCase(accentBase, "dp-cccccccccccc", challenge, 8);
+  accentReplay.propertyAliases = asciiProperty.propertyAliases;
+  accentReplay.propertyIdentifierCommitments = asciiProperty.propertyIdentifierCommitments;
+  assert.throws(() => buildReviewIndex({ request, challengeSha256: challenge, catalogSha256: hash("catalog"),
+    cases: [accentBase, accentReplay], hosted }), /alias replay is not unique/,
+  "official accented and ASCII county forms must not bypass duplicate-index rejection");
+  const slashParcel = reconcilePropertyIdentity({ ...numericIdentity, subdivision: null, lot: null, block: null,
+    county: "Utah County", parcel: "Parcel AB/CD" }, { ...numericIdentity, subdivision: null, lot: null, block: null,
+    county: "Utah County", parcel: "Parcel AB/CD" });
+  const numericParcel = reconcilePropertyIdentity({ ...numericIdentity, subdivision: null, lot: null, block: null,
+    county: "Utah County", parcel: "Parcel AB/400" }, { ...numericIdentity, subdivision: null, lot: null, block: null,
+    county: "Utah County", parcel: "Parcel AB/400" });
+  const slashBase = { ...structuredClone(caseResult), propertyAliases: slashParcel.propertyAliases,
+    propertyIdentifierCommitments: slashParcel.propertyIdentifierCommitments };
+  const numericDistinct = nextCase(slashBase, "dp-dddddddddddd", challenge, 10);
+  numericDistinct.propertyAliases = numericParcel.propertyAliases;
+  numericDistinct.propertyIdentifierCommitments = numericParcel.propertyIdentifierCommitments;
+  assert.equal(buildReviewIndex({ request, challengeSha256: challenge, catalogSha256: hash("catalog"),
+    cases: [slashBase, numericDistinct], hosted }).cases.length, 2,
+  "Roman-looking parcel components and numeric parcel components remain safely distinct");
   const conflictingProperty = reconcilePropertyIdentity({ ...numericIdentity, block: "Block III" },
     { ...numericIdentity, block: "Block 3" });
   const conflict = nextCase(caseResult, "dp-fedcbafedcba", challenge, 4);
