@@ -76,7 +76,11 @@ export function validateReviewRequest(review, { requestId, root = null } = {}) {
       "sourcePath", "selector", "selectorSha256", "expectedFailureCandidate", "expectedFailureCandidateSha256"],
     `review case ${item?.caseId || "unknown"}`);
     exactKeys(item.selector, ["pages", "tractIds", "cropReceiptSha256"], "source selector");
-    exactKeys(item.expectedFailureCandidate, ["code", "statement"], "expected-failure candidate");
+    exactKeys(item.expectedFailureCandidate, ["code", "stage", "category", "decisiveSourceObservations",
+      "requiredMissingInformation", "evidenceSelectors", "evidenceSha256", "evidenceReceiptSha256s",
+      "selectorReceiptSha256", "refusalFingerprintSha256", "zeroGeometryPolicy"], "expected-failure candidate");
+    exactKeys(item.expectedFailureCandidate.zeroGeometryPolicy,
+      ["geometryArtifactsExpected", "partialCertifiedGeometryAllowed"], "zero-geometry policy");
     const pages = item.selector?.pages;
     if (!CASE_ID.test(item.caseId || "") || ids.has(item.caseId) || !CORPUS_ID.test(item.corpusId || "")
       || !SHA256.test(item.assignmentEventSha256 || "") || !SHA256.test(item.sourceSha256 || "")
@@ -88,8 +92,17 @@ export function validateReviewRequest(review, { requestId, root = null } = {}) {
       || !SHA256.test(item.selector.cropReceiptSha256 || "")
       || item.selectorSha256 !== sha256(stableJson(item.selector))
       || !REFUSAL_CODES.includes(item.expectedFailureCandidate?.code)
-      || typeof item.expectedFailureCandidate?.statement !== "string" || item.expectedFailureCandidate.statement.length < 1
-      || item.expectedFailureCandidate.statement.length > 2000
+      || typeof item.expectedFailureCandidate.stage !== "string" || !item.expectedFailureCandidate.stage
+      || typeof item.expectedFailureCandidate.category !== "string" || !item.expectedFailureCandidate.category
+      || !stringArray(item.expectedFailureCandidate.decisiveSourceObservations)
+      || !stringArray(item.expectedFailureCandidate.requiredMissingInformation)
+      || !stringArray(item.expectedFailureCandidate.evidenceSelectors)
+      || !SHA256.test(item.expectedFailureCandidate.evidenceSha256 || "")
+      || !hashArray(item.expectedFailureCandidate.evidenceReceiptSha256s)
+      || !SHA256.test(item.expectedFailureCandidate.selectorReceiptSha256 || "")
+      || !SHA256.test(item.expectedFailureCandidate.refusalFingerprintSha256 || "")
+      || item.expectedFailureCandidate.zeroGeometryPolicy.geometryArtifactsExpected !== 0
+      || item.expectedFailureCandidate.zeroGeometryPolicy.partialCertifiedGeometryAllowed !== false
       || item.expectedFailureCandidateSha256 !== sha256(stableJson(item.expectedFailureCandidate))) {
       throw new Error(`Refusal candidate ${item?.caseId || "unknown"} has invalid source, selector, or expected-code binding.`);
     }
@@ -105,10 +118,18 @@ export function validateReviewRequest(review, { requestId, root = null } = {}) {
 export function buildAssessmentSchema(pageCount) {
   return {
     type: "object", additionalProperties: false,
-    required: ["decision", "expectedFailureCode", "pagesReviewed", "analysis", "missingInformation", "propertyIdentity"],
+    required: ["decision", "expectedFailureCode", "expectedFailureStage", "expectedFailureCategory",
+      "decisiveSourceObservationsConfirmed", "requiredMissingInformationConfirmed", "evidenceSelectorsConfirmed",
+      "zeroGeometryConfirmed", "pagesReviewed", "analysis", "missingInformation", "propertyIdentity"],
     properties: {
       decision: { type: "string", enum: ["approve-refusal", "reject-refusal", "uncertain"] },
       expectedFailureCode: { type: ["string", "null"], enum: [...REFUSAL_CODES, null] },
+      expectedFailureStage: { type: ["string", "null"] },
+      expectedFailureCategory: { type: ["string", "null"] },
+      decisiveSourceObservationsConfirmed: { type: "array", items: { type: "string" } },
+      requiredMissingInformationConfirmed: { type: "array", items: { type: "string" } },
+      evidenceSelectorsConfirmed: { type: "array", items: { type: "string" } },
+      zeroGeometryConfirmed: { type: "boolean" },
       pagesReviewed: { type: "array", minItems: pageCount, maxItems: pageCount, uniqueItems: true,
         items: { type: "integer", minimum: 1, maximum: pageCount } },
       analysis: { type: "string", minLength: 1, maxLength: 8000 },
@@ -145,12 +166,13 @@ export function buildAssessmentPrompt({ requestId, challengeSha256, candidate, m
     `Source SHA-256: ${candidate.sourceSha256}`,
     `Selector SHA-256: ${candidate.selectorSha256}`,
     `Expected-failure candidate SHA-256: ${candidate.expectedFailureCandidateSha256}`,
-    `Candidate code: ${candidate.expectedFailureCandidate.code}`,
-    `Candidate statement: ${candidate.expectedFailureCandidate.statement}`,
+    `Exact refusal candidate JSON: ${stableJson(candidate.expectedFailureCandidate)}`,
     `Independent system: ${model.provider} / ${model.model} / catalog version ${model.version}`,
     `Return pagesReviewed exactly [${candidate.selector.pages.join(",")}].`,
     "For propertyIdentity, transcribe only source-visible stable recording/tract identifiers. Use null when absent.",
     "Citations must quote the visible source text that supports every non-null identity field.",
+    "Copy the candidate stage, category, decisive observations, missing information, and evidence selectors exactly into the corresponding confirmation fields only if every item is supported by the selected source.",
+    "Set zeroGeometryConfirmed true only if refusal is correct without constructing or accepting any partial geometry.",
     "Return JSON only, conforming exactly to the supplied schema.",
   ].join("\n");
 }
@@ -183,7 +205,15 @@ export function normalizeAssessment(assessment, candidate) {
     || stableJson(assessment.pagesReviewed) !== stableJson(candidate.selector.pages)
     || typeof assessment.analysis !== "string" || assessment.analysis.length < 1
     || !Array.isArray(assessment.missingInformation)
-    || assessment.decision !== "approve-refusal" || assessment.expectedFailureCode !== candidate.expectedFailureCandidate.code) {
+    || assessment.decision !== "approve-refusal" || assessment.expectedFailureCode !== candidate.expectedFailureCandidate.code
+    || assessment.expectedFailureStage !== candidate.expectedFailureCandidate.stage
+    || assessment.expectedFailureCategory !== candidate.expectedFailureCandidate.category
+    || stableJson(assessment.decisiveSourceObservationsConfirmed)
+      !== stableJson(candidate.expectedFailureCandidate.decisiveSourceObservations)
+    || stableJson(assessment.requiredMissingInformationConfirmed)
+      !== stableJson(candidate.expectedFailureCandidate.requiredMissingInformation)
+    || stableJson(assessment.evidenceSelectorsConfirmed) !== stableJson(candidate.expectedFailureCandidate.evidenceSelectors)
+    || assessment.zeroGeometryConfirmed !== true) {
     throw new Error("Independent assessment did not approve the exact candidate refusal over all pages.");
   }
   const identity = normalizeIdentity(assessment.propertyIdentity, candidate.selector.pages.length);
@@ -221,16 +251,23 @@ export function reconcilePropertyIdentity(left, right) {
   const agreedIdentity = Object.fromEntries(identityFields.map((field) => [field,
     leftKey[field] !== null && leftKey[field] === rightKey[field] ? leftKey[field] : null]));
   const propertySpecific = ["recordingInstrument", "subdivision", "lot", "block", "parcel", "tract"];
+  const stronger = ["subdivision", "lot", "block", "parcel", "tract"];
+  if (stronger.some((field) => leftKey[field] !== null && rightKey[field] !== null && leftKey[field] !== rightKey[field])) {
+    throw new Error("Independent reviewers reported conflicting stable property identifiers.");
+  }
   if (!propertySpecific.some((field) => agreedIdentity[field] !== null)) {
     throw new Error("Independent reviewers share no stable source-visible property identifier.");
   }
-  const evidence = { reviewerIdentities: [leftKey, rightKey], agreedIdentity,
+  const hasStronger = stronger.some((field) => agreedIdentity[field] !== null);
+  const groupIdentity = { ...agreedIdentity,
+    recordingInstrument: hasStronger ? null : agreedIdentity.recordingInstrument };
+  const evidence = { reviewerIdentities: [leftKey, rightKey], agreedIdentity, groupIdentity,
     reviewerCitations: [left.citations, right.citations] };
   return {
     propertyIdentityEvidence: evidence,
     propertyIdentityEvidenceSha256: sha256(stableJson(evidence)),
     propertyGroupSha256: sha256(stableJson({ schemaVersion: 1, kind: "source-visible-property-group",
-      identity: agreedIdentity })),
+      identity: groupIdentity })),
   };
 }
 
@@ -325,6 +362,10 @@ export function validateReviewIndex(index, request) {
 }
 
 function normalizeVisible(value) { return value.normalize("NFKC").trim().replace(/\s+/g, " ").toUpperCase(); }
+function stringArray(value) { return Array.isArray(value) && value.length > 0 && value.length <= 100
+  && value.every((item) => typeof item === "string" && item.trim() && item.length <= 2000); }
+function hashArray(value) { return Array.isArray(value) && value.length > 0 && new Set(value).size === value.length
+  && value.every((item) => SHA256.test(item || "")); }
 function exactKeys(value, expected, label) {
   if (!value || typeof value !== "object" || Array.isArray(value)
     || Object.keys(value).length !== expected.length || expected.some((key) => !Object.hasOwn(value, key))) {

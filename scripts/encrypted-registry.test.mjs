@@ -436,6 +436,34 @@ test("fail-safe truth requires a prior distinct two-system protected review and 
   assert.equal(validateCorpusRegistry({ registry }).ok, false);
 });
 
+test("review-seal callers can submit only an exact protected-run reference, never hash-shaped review facts", () => {
+  const fixture = createFixture();
+  assert.equal(append(fixture, intentFor(fixture, assignmentBody(0, { split: "fail-safe" })), "6101").status, 0);
+  const assignment = latestState(fixture).registry.events.at(-1);
+  const forged = append(fixture, intentFor(fixture, reviewBody(assignment, 0, iso(2))), "6102");
+  assert.notEqual(forged.status, 0);
+  assert.match(forged.stderr, /workflow-owned|only protected workflow reference fields|protected-run reference/i);
+
+  const referenceOnly = { eventType: "review-seal", caseId: assignment.caseId, corpusId: assignment.corpusId, payload: {
+    reviewRequestId: hash("review-request-reference"), reviewerWorkflowRunId: "9000",
+    reviewerWorkflowRunAttempt: "1", verifierPolicyTip: "f".repeat(40),
+  } };
+  const missingProtectedEvidence = append(fixture, intentFor(fixture, referenceOnly), "6103");
+  assert.notEqual(missingProtectedEvidence.status, 0);
+  assert.match(missingProtectedEvidence.stderr, /requires exact protected-workflow-derived evidence/i);
+  assert.equal(readIndex(fixture).envelopes.length, 2);
+});
+
+test("append workflow resolves review facts from exact attested protected reviewer evidence", () => {
+  for (const required of [
+    "extract-protected-review-reference.mjs", "reviewerWorkflowRunId", "reviewerWorkflowRunAttempt",
+    "protected-refusal-reviewer.yml", "registry-evidence.bundle", "gh attestation verify",
+    "derive-review-event", "--derived-review-event",
+  ]) assert.match(appendWorkflow, new RegExp(required.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.match(appendWorkflow, /\.status == "completed" and \.conclusion == "success"/);
+  assert.match(appendWorkflow, /\.head_sha == \$tip/);
+});
+
 test("stale index, wrong keys, tampering, reorder, deletion, and caller chronology fail closed", () => {
   const fixture = createFixture();
   const stale = intentFor(fixture, assignmentBody(0));

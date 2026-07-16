@@ -161,11 +161,36 @@ jobs:
             --request "$root/request.json" --root "$root/evidence" --out "$root/evidence.bundle" \
             > "$root/encrypted-evidence-receipt.json"
 
+      - name: Encrypt the same complete evidence to the protected registry verifier
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/deed-refusal-review"
+          key_id="$(jq -er .registryRequest.keyId keys/manifest.json)"
+          node scripts/protected-refusal-reviewer.mjs encrypt-registry-evidence \
+            --request "$root/request.json" --root "$root/evidence" \
+            --public-key keys/deed-registry-request-public.pem --key-id "$key_id" \
+            --out "$root/registry-evidence.bundle" > "$root/registry-evidence-receipt.json"
+
+      - name: Attest the registry-verifiable encrypted evidence
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-path: ${{ runner.temp }}/deed-refusal-review/registry-evidence.bundle
+          show-summary: false
+
       - name: Upload ciphertext evidence only
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: deed-refusal-review-${{ inputs.request_id }}-encrypted-evidence
           path: ${{ runner.temp }}/deed-refusal-review/evidence.bundle
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+      - name: Upload registry-verifiable ciphertext evidence only
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: deed-refusal-review-${{ inputs.request_id }}-registry-evidence
+          path: ${{ runner.temp }}/deed-refusal-review/registry-evidence.bundle
           if-no-files-found: error
           retention-days: 30
           compression-level: 0

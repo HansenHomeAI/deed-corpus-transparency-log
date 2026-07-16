@@ -14,7 +14,13 @@ const candidate = {
   sourcePath: "sources/dp-0123456789ab.pdf", selector: { pages: [1, 2], tractIds: ["legal-description"],
     cropReceiptSha256: hash("crop") },
   selectorSha256: hashJson({ pages: [1, 2], tractIds: ["legal-description"], cropReceiptSha256: hash("crop") }),
-  expectedFailureCandidate: { code: "PARSE_UNRESOLVED", statement: "A referenced exhibit is absent." },
+  expectedFailureCandidate: { code: "PARSE_UNRESOLVED", stage: "analyze", category: "deed_by_reference",
+    decisiveSourceObservations: ["A referenced exhibit is absent."],
+    requiredMissingInformation: ["The incorporated exhibit"],
+    evidenceSelectors: ["full-source-pages:1,2"], evidenceSha256: hash("evidence"),
+    evidenceReceiptSha256s: [hash("receipt-a"), hash("receipt-b")], selectorReceiptSha256: hash("selector-receipt"),
+    refusalFingerprintSha256: hash("refusal-fingerprint"),
+    zeroGeometryPolicy: { geometryArtifactsExpected: 0, partialCertifiedGeometryAllowed: false } },
 };
 candidate.expectedFailureCandidateSha256 = hashJson(candidate.expectedFailureCandidate);
 
@@ -55,15 +61,33 @@ test("two approving systems must agree on source-visible property identity", () 
       { page: 2, field: "tract", visibleText: "Tract A" },
     ],
   };
-  const base = { decision: "approve-refusal", expectedFailureCode: "PARSE_UNRESOLVED", pagesReviewed: [1, 2],
+  const base = { decision: "approve-refusal", expectedFailureCode: "PARSE_UNRESOLVED",
+    expectedFailureStage: "analyze", expectedFailureCategory: "deed_by_reference",
+    decisiveSourceObservationsConfirmed: ["A referenced exhibit is absent."],
+    requiredMissingInformationConfirmed: ["The incorporated exhibit"],
+    evidenceSelectorsConfirmed: ["full-source-pages:1,2"], zeroGeometryConfirmed: true, pagesReviewed: [1, 2],
     analysis: "The deed references an absent exhibit needed to close the boundary.", missingInformation: ["Exhibit A"], propertyIdentity };
   const left = normalizeAssessment(base, candidate); const right = normalizeAssessment(structuredClone(base), candidate);
   const result = reconcilePropertyIdentity(left.propertyIdentity, right.propertyIdentity);
   assert.match(result.propertyIdentityEvidenceSha256, /^[a-f0-9]{64}$/);
   assert.match(result.propertyGroupSha256, /^[a-f0-9]{64}$/);
+  const laterInstrumentLeft = structuredClone(left.propertyIdentity);
+  const laterInstrumentRight = structuredClone(right.propertyIdentity);
+  laterInstrumentLeft.recordingInstrument = "ENTRY 88888";
+  laterInstrumentRight.recordingInstrument = "ENTRY 88888";
+  assert.equal(reconcilePropertyIdentity(laterInstrumentLeft, laterInstrumentRight).propertyGroupSha256,
+    result.propertyGroupSha256, "same parcel/tract across recording instruments must dedupe");
+  const plattedLeft = { county: "UTAH COUNTY", recordingInstrument: "ENTRY 11111", subdivision: "SUNSET PLAT",
+    lot: "LOT 7", block: "BLOCK 2", parcel: null, tract: null, citations: [] };
+  const plattedRight = { ...plattedLeft, recordingInstrument: "ENTRY 22222" };
+  assert.equal(reconcilePropertyIdentity(plattedLeft, plattedLeft).propertyGroupSha256,
+    reconcilePropertyIdentity(plattedRight, plattedRight).propertyGroupSha256,
+    "same subdivision/lot/block in separate title instruments must dedupe");
+  const tamperedBasis = structuredClone(base); tamperedBasis.expectedFailureStage = "execute";
+  assert.throws(() => normalizeAssessment(tamperedBasis, candidate), /exact candidate refusal/);
   const changed = structuredClone(right.propertyIdentity); changed.parcel = "99:999:9999";
   changed.recordingInstrument = "ENTRY 99999"; changed.tract = "TRACT Z";
-  assert.throws(() => reconcilePropertyIdentity(left.propertyIdentity, changed), /no stable source-visible property identifier/);
+  assert.throws(() => reconcilePropertyIdentity(left.propertyIdentity, changed), /conflicting stable property identifiers/);
 });
 
 test("review index enforces call, session, provider, returned-model, challenge, and property-group uniqueness", () => {
@@ -94,7 +118,8 @@ test("protected workflow has no product checkout and retains challenge, OIDC att
   const workflow = readFileSync(new URL("../.github/workflows/protected-refusal-reviewer.yml", import.meta.url), "utf8");
   assert.doesNotMatch(workflow, /repository:\s+HansenHomeAI\/Autodesk-automation/);
   for (const text of ["openssl rand 32", "actions/attest@", "gh attestation verify", "--deny-self-hosted-runners",
-    "persist-credentials: false", "contents: write", "encrypt-evidence", "Upload ciphertext evidence only",
+    "persist-credentials: false", "contents: write", "encrypt-evidence", "encrypt-registry-evidence",
+    "registry-evidence.bundle", "Upload ciphertext evidence only",
     "rm -rf \"$RUNNER_TEMP/deed-refusal-review\""]) assert.match(workflow, new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 });
 

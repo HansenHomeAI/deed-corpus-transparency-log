@@ -19,7 +19,9 @@ else if (command === "verify-source") verifySource();
 else if (command === "review") await review();
 else if (command === "validate-index") validateIndex();
 else if (command === "encrypt-evidence") encryptEvidence();
-else throw new Error("usage: protected-refusal-reviewer write-request|verify-input-release|verify-source|review|validate-index|encrypt-evidence");
+else if (command === "encrypt-registry-evidence") encryptRegistryEvidence();
+else if (command === "derive-review-event") deriveReviewEvent();
+else throw new Error("usage: protected-refusal-reviewer write-request|verify-input-release|verify-source|review|validate-index|encrypt-evidence|encrypt-registry-evidence|derive-review-event");
 
 function writeRequest() {
   const request = validateReviewDispatchRequest({
@@ -80,6 +82,7 @@ async function review() {
   if (sha256(reviewBytes) !== request.reviewRequestSha256) throw new Error("Review request changed after dispatch.");
   const reviewRequest = validateReviewRequest(JSON.parse(reviewBytes), { requestId: request.requestId,
     root: (path) => readFileSync(safePath(root, path)) });
+  writeFileSync(join(out, "review-request.json"), reviewBytes, { flag: "wx", mode: 0o600 });
   const { text: catalogText, value: catalog } = await fetchCatalog(token);
   validateCatalogModels(catalog);
   writeFileSync(join(out, "github-models-catalog.json"), catalogText, { flag: "wx", mode: 0o600 });
@@ -160,6 +163,95 @@ function encryptEvidence() {
     encryptedBundleSha256: sha256(bytes), output: out })}\n`);
 }
 
+function encryptRegistryEvidence() {
+  const request = loadRequest(); const root = resolve(argument("--root"));
+  const paths = listFiles(root); const fileSet = createFileSet({ role: "evidence", requestId: request.requestId, root, paths });
+  const bytes = encryptBundle(fileSet, readFileSync(argument("--public-key"), "utf8"), argument("--key-id"));
+  const out = argument("--out"); writeFileSync(out, bytes, { flag: "wx", mode: 0o600 });
+  process.stdout.write(`${JSON.stringify({ ok: true, files: fileSet.files.length, evidenceRootSha256: fileSet.fileRootSha256,
+    encryptedBundleSha256: sha256(bytes), output: out })}\n`);
+}
+
+function deriveReviewEvent() {
+  const root = resolve(argument("--root"));
+  const reference = JSON.parse(readFileSync(argument("--reference"), "utf8"));
+  exactKeys(reference, ["required", "eventType", "caseId", "corpusId", "reviewRequestId", "reviewerWorkflowRunId",
+    "reviewerWorkflowRunAttempt", "verifierPolicyTip"], "protected review reference");
+  if (reference.required !== true || reference.eventType !== "review-seal" || !/^[a-f0-9]{64}$/.test(reference.reviewRequestId || "")
+    || !/^[1-9][0-9]*$/.test(reference.reviewerWorkflowRunId || "")
+    || !/^[1-9][0-9]*$/.test(reference.reviewerWorkflowRunAttempt || "")
+    || !/^[a-f0-9]{40}$/.test(reference.verifierPolicyTip || "")) throw new Error("Protected review reference is invalid.");
+  const reviewBytes = readFileSync(join(root, "review-request.json"));
+  const review = validateReviewRequest(JSON.parse(reviewBytes), { requestId: reference.reviewRequestId });
+  const indexBytes = readFileSync(join(root, "review-index.json")); const index = JSON.parse(indexBytes);
+  validateReviewIndex(index, { requestId: reference.reviewRequestId, reviewRequestSha256: sha256(reviewBytes),
+    verifierPolicyTip: reference.verifierPolicyTip });
+  if (index.reviewerWorkflowRunId !== reference.reviewerWorkflowRunId
+    || index.reviewerWorkflowRunAttempt !== reference.reviewerWorkflowRunAttempt) throw new Error("Review run identity differs from protected reference.");
+  const candidate = review.cases.find((item) => item.caseId === reference.caseId && item.corpusId === reference.corpusId);
+  const item = index.cases.find((entry) => entry.caseId === reference.caseId && entry.corpusId === reference.corpusId);
+  if (!candidate || !item || item.assignmentEventSha256 !== candidate.assignmentEventSha256
+    || item.sourceSha256 !== candidate.sourceSha256 || item.selectorSha256 !== candidate.selectorSha256
+    || item.expectedFailureCandidateSha256 !== candidate.expectedFailureCandidateSha256
+    || item.expectedFailureCode !== candidate.expectedFailureCandidate.code || item.calls?.length !== 2) {
+    throw new Error("Protected review case does not bind the exact candidate.");
+  }
+  const seenCalls = new Set(); const seenSessions = new Set();
+  const semanticSystems = item.calls.map((call, offset) => {
+    const expected = REVIEW_MODELS[offset]; const base = join(root, "cases", item.caseId, slug(expected.provider));
+    const retained = {
+      promptSha256: sha256(readFileSync(join(base, "prompt.txt"))),
+      schemaSha256: sha256(readFileSync(join(base, "schema.json"))),
+      imageManifestSha256: sha256(readFileSync(join(base, "images.json"))),
+      rawResponseSha256: sha256(readFileSync(join(base, "raw-response.json"))),
+      outputSha256: sha256(readFileSync(join(base, "output.json"))),
+    };
+    const receipt = JSON.parse(readFileSync(join(base, "call-receipt.json"), "utf8"));
+    normalizeAssessment(JSON.parse(readFileSync(join(base, "output.json"), "utf8")), candidate);
+    const receiptHash = receipt.receiptSha256; const unhashed = structuredClone(receipt); delete unhashed.receiptSha256;
+    if (receiptHash !== sha256(stableJson(unhashed)) || item.callReceiptSha256s?.[offset] !== receiptHash
+      || call.receiptSha256 !== receiptHash || call.provider !== expected.provider || call.modelRequested !== expected.model
+      || call.modelVersion !== expected.version || call.catalogVersion !== expected.version
+      || receipt.catalogVersion !== expected.version || call.challengeSha256 !== index.protectedChallengeSha256
+      || call.requestId !== index.requestId || call.caseId !== item.caseId
+      || Object.entries(retained).some(([field, digest]) => call[field] !== digest)
+      || item.assessmentSha256s?.[offset] !== retained.outputSha256
+      || seenCalls.has(call.callId) || seenSessions.has(call.sessionIdSha256)) throw new Error("Protected review raw call evidence differs.");
+    seenCalls.add(call.callId); seenSessions.add(call.sessionIdSha256);
+    const images = JSON.parse(readFileSync(join(base, "images.json"), "utf8"));
+    if (!Array.isArray(images) || images.length !== candidate.selector.pages.length
+      || images.some((image, page) => image.page !== page + 1
+        || sha256(readFileSync(join(root, "cases", item.caseId, "rendered", image.name))) !== image.sha256)) {
+      throw new Error("Protected review does not retain the complete all-page image set.");
+    }
+    return { provider: call.provider, requestedModel: call.modelRequested, catalogVersion: call.catalogVersion,
+      returnedModel: call.modelReturned, callId: call.callId, sessionIdSha256: call.sessionIdSha256,
+      receiptSha256: receiptHash, assessmentSha256: item.assessmentSha256s[offset] };
+  });
+  if (new Set(semanticSystems.map((item) => item.provider)).size !== 2
+    || new Set(semanticSystems.map((item) => item.returnedModel)).size !== 2) throw new Error("Protected review systems are not independent.");
+  const property = JSON.parse(readFileSync(join(root, "cases", item.caseId, "property-identity-evidence.json"), "utf8"));
+  if (sha256(stableJson(property)) !== item.propertyIdentityEvidenceSha256) throw new Error("Protected property evidence differs.");
+  const fileSetReceipt = JSON.parse(readFileSync(join(root, ".evidence-fileset-receipt.json"), "utf8"));
+  if (fileSetReceipt.role !== "evidence" || fileSetReceipt.requestId !== reference.reviewRequestId
+    || !/^[a-f0-9]{64}$/.test(fileSetReceipt.fileRootSha256 || "")) throw new Error("Protected evidence file-set receipt is invalid.");
+  const event = { eventType: "review-seal", caseId: item.caseId, corpusId: item.corpusId, payload: {
+    assignmentEventSha256: item.assignmentEventSha256, sourceSha256: item.sourceSha256,
+    selectorSha256: item.selectorSha256, expectedFailureCandidateSha256: item.expectedFailureCandidateSha256,
+    reviewRequestSha256: index.reviewRequestSha256, reviewIndexSha256: sha256(indexBytes),
+    reviewEvidenceRootSha256: fileSetReceipt.fileRootSha256, reviewAttestationSubjectSha256: sha256(indexBytes),
+    reviewAttestationBundleRootSha256: sha256(readFileSync(join(root, "review-index.sigstore.json"))),
+    verifierPolicyTip: index.verifierPolicyTip, reviewerWorkflowRef: index.reviewerWorkflowRef,
+    reviewerWorkflowRunId: index.reviewerWorkflowRunId, reviewerWorkflowRunAttempt: index.reviewerWorkflowRunAttempt,
+    protectedChallengeSha256: index.protectedChallengeSha256, semanticSystems,
+    propertyIdentityEvidenceSha256: item.propertyIdentityEvidenceSha256, propertyGroupSha256: item.propertyGroupSha256,
+    productCodeMounted: false, productOutputAvailable: false, geometryArtifactsExpected: 0,
+    status: "approved", critical: 0, major: 0,
+  } };
+  writeFileSync(argument("--out"), `${JSON.stringify(event, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+  process.stdout.write(`${JSON.stringify({ ok: true, caseId: event.caseId, reviewIndexSha256: event.payload.reviewIndexSha256 })}\n`);
+}
+
 async function fetchCatalog(token) {
   const response = await fetch("https://models.github.ai/catalog/models", { headers: headers(token), signal: AbortSignal.timeout(60_000) });
   const text = await response.text(); if (!response.ok) throw new Error(`GitHub Models catalog returned HTTP ${response.status}.`);
@@ -215,6 +307,9 @@ function headers(token) { return { Accept: "application/vnd.github+json", Author
 function loadRequest() { return validateReviewDispatchRequest(JSON.parse(readFileSync(argument("--request"), "utf8"))); }
 function safePath(root, value) { const path = resolve(root, value); if (path === root || !path.startsWith(`${root}/`)) throw new Error("Path escaped review root."); return path; }
 function listFiles(root) { return readdirSync(root, { withFileTypes: true }).flatMap((entry) => { const path = join(root, entry.name); if (entry.isDirectory()) return listFiles(path); if (!entry.isFile()) return []; if (statSync(path).size > 512 * 1024 * 1024) throw new Error("Evidence file exceeds limit."); return [path]; }).sort(); }
+function exactKeys(value, fields, label) { if (!value || typeof value !== "object" || Array.isArray(value)
+  || Object.keys(value).length !== fields.length || fields.some((field) => !Object.hasOwn(value, field))) {
+  throw new Error(`${label} fields are not exact.`); } }
 function slug(value) { return value.toLowerCase().replace(/[^a-z0-9]+/g, "-"); }
 function argument(name) { const i = process.argv.indexOf(name); if (i < 0 || !process.argv[i + 1]) throw new Error(`missing ${name}`); return process.argv[i + 1]; }
 function requiredEnv(name) { if (!process.env[name]) throw new Error(`missing ${name}`); return process.env[name]; }

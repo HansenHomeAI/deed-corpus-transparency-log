@@ -283,6 +283,15 @@ export function validateAppendIntent(intent, expectedIndexSha256, state) {
       || !/^[a-f0-9]{40}$/.test(intent.eventData.payload.productCodeTip || "")) {
       throw new Error("Source release callers may supply only productCodeTip; all custody fields are workflow-derived.");
     }
+  } else if (intent.eventData.eventType === "review-seal") {
+    const fields = new Set(["reviewRequestId", "reviewerWorkflowRunId", "reviewerWorkflowRunAttempt", "verifierPolicyTip"]);
+    if (!hasExactKeys(intent.eventData.payload, fields)
+      || !SHA256.test(intent.eventData.payload.reviewRequestId || "")
+      || !/^[1-9][0-9]*$/.test(intent.eventData.payload.reviewerWorkflowRunId || "")
+      || !/^[1-9][0-9]*$/.test(intent.eventData.payload.reviewerWorkflowRunAttempt || "")
+      || !/^[a-f0-9]{40}$/.test(intent.eventData.payload.verifierPolicyTip || "")) {
+      throw new Error("Review-seal callers may supply only one exact protected workflow reference; review facts are workflow-derived.");
+    }
   }
   return intent;
 }
@@ -303,12 +312,26 @@ function hasExactKeys(value, allowed) {
     && Object.keys(value).every((key) => allowed.has(key));
 }
 
-export function appendPlaintextEvent(state, intent, authority, now = new Date(), nonce = randomBytes(32).toString("hex")) {
+export function appendPlaintextEvent(state, intent, authority, now = new Date(), nonce = randomBytes(32).toString("hex"),
+  { derivedReviewEvent = null } = {}) {
   validatePlaintextRegistry(state);
   validateAuthority(authority);
   if (!SHA256.test(nonce)) throw new Error("Workflow nonce must be 32 random bytes encoded as hex.");
   const before = structuredClone(state.registry);
-  const event = structuredClone(intent.eventData);
+  let event = structuredClone(intent.eventData);
+  if (event.eventType === "review-seal") {
+    const reference = event;
+    if (!isPlainObject(derivedReviewEvent) || derivedReviewEvent.eventType !== "review-seal"
+      || derivedReviewEvent.caseId !== reference.caseId || derivedReviewEvent.corpusId !== reference.corpusId
+      || derivedReviewEvent.payload?.reviewerWorkflowRunId !== reference.payload.reviewerWorkflowRunId
+      || derivedReviewEvent.payload?.reviewerWorkflowRunAttempt !== reference.payload.reviewerWorkflowRunAttempt
+      || derivedReviewEvent.payload?.verifierPolicyTip !== reference.payload.verifierPolicyTip) {
+      throw new Error("Review-seal append requires exact protected-workflow-derived evidence; caller facts are never accepted.");
+    }
+    event = structuredClone(derivedReviewEvent);
+  } else if (derivedReviewEvent !== null) {
+    throw new Error("Derived review evidence may be supplied only for review-seal append.");
+  }
   event.issuedAt = now.toISOString();
   event.authority = structuredClone(authority);
   if (event.eventType === "source-release") {

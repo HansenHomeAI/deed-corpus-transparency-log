@@ -9,6 +9,7 @@ on:
         type: string
 
 permissions:
+  actions: read
   contents: write
   id-token: write
   attestations: write
@@ -50,6 +51,60 @@ jobs:
           test -n "$REQUEST_PRIVATE_KEY_PEM"
           printf '%s' "$REQUEST_PRIVATE_KEY_PEM" > "$RUNNER_TEMP/deed-registry-request-private.pem"
 
+      - name: Resolve review seals only from exact protected hosted evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ENCRYPTED_REQUEST_BASE64URL: ${{ inputs.encrypted_request_base64url }}
+          REQUEST_KEY_ID: ${{ vars.DEED_REGISTRY_REQUEST_KEY_ID }}
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/deed-registry-review-proof"
+          umask 077
+          mkdir -p "$root"
+          node scripts/extract-protected-review-reference.mjs \
+            --request-private-key "$RUNNER_TEMP/deed-registry-request-private.pem" \
+            --request-base64url "$ENCRYPTED_REQUEST_BASE64URL" --request-key-id "$REQUEST_KEY_ID" \
+            --out "$root/reference.json"
+          if jq -e '.required == true' "$root/reference.json" >/dev/null; then
+            run_id="$(jq -er .reviewerWorkflowRunId "$root/reference.json")"
+            attempt="$(jq -er .reviewerWorkflowRunAttempt "$root/reference.json")"
+            tip="$(jq -er .verifierPolicyTip "$root/reference.json")"
+            request_id="$(jq -er .reviewRequestId "$root/reference.json")"
+            gh api "repos/HansenHomeAI/deed-corpus-transparency-log/actions/runs/$run_id" > "$root/run.json"
+            jq -e --arg tip "$tip" --arg attempt "$attempt" \
+              '.event == "workflow_dispatch" and .status == "completed" and .conclusion == "success"
+               and .head_sha == $tip and (.run_attempt|tostring) == $attempt
+               and .path == ".github/workflows/protected-refusal-reviewer.yml"' \
+              "$root/run.json" >/dev/null
+            gh api "repos/HansenHomeAI/deed-corpus-transparency-log/actions/runs/$run_id/artifacts?per_page=100" > "$root/artifacts.json"
+            artifact_id="$(jq -er --arg name "deed-refusal-review-$request_id-registry-evidence" --arg run "$run_id" \
+              '[.artifacts[] | select(.name == $name and .expired == false and (.workflow_run.id|tostring) == $run)]
+               | if length == 1 then .[0].id else error("exact registry evidence artifact missing or duplicated") end' \
+              "$root/artifacts.json")"
+            gh api -H "Accept: application/vnd.github+json" \
+              "repos/HansenHomeAI/deed-corpus-transparency-log/actions/artifacts/$artifact_id/zip" > "$root/registry-evidence.zip"
+            test "$(unzip -Z1 "$root/registry-evidence.zip")" = registry-evidence.bundle
+            unzip -p "$root/registry-evidence.zip" registry-evidence.bundle > "$root/registry-evidence.bundle"
+            gh attestation verify "$root/registry-evidence.bundle" \
+              --repo HansenHomeAI/deed-corpus-transparency-log \
+              --signer-workflow HansenHomeAI/deed-corpus-transparency-log/.github/workflows/protected-refusal-reviewer.yml \
+              --signer-digest "$tip" --source-ref refs/heads/main \
+              --cert-oidc-issuer https://token.actions.githubusercontent.com --deny-self-hosted-runners \
+              --format json > "$root/registry-evidence-attestation.json"
+            node scripts/deed-bundle.mjs unpack --bundle "$root/registry-evidence.bundle" \
+              --private-key "$RUNNER_TEMP/deed-registry-request-private.pem" --key-id "$REQUEST_KEY_ID" \
+              --role evidence --request-id "$request_id" --out "$root/evidence"
+            gh attestation verify "$root/evidence/review-index.json" \
+              --repo HansenHomeAI/deed-corpus-transparency-log \
+              --signer-workflow HansenHomeAI/deed-corpus-transparency-log/.github/workflows/protected-refusal-reviewer.yml \
+              --signer-digest "$tip" --source-ref refs/heads/main \
+              --cert-oidc-issuer https://token.actions.githubusercontent.com --deny-self-hosted-runners \
+              --bundle "$root/evidence/review-index.sigstore.json" --format json \
+              > "$root/review-index-attestation.json"
+            node scripts/protected-refusal-reviewer.mjs derive-review-event \
+              --root "$root/evidence" --reference "$root/reference.json" --out "$root/derived-event.json"
+          fi
+
       - name: Verify the committed opaque chain before mutation
         run: node scripts/verify-index.mjs --index registry/index.json --ciphertext-dir registry/ciphertexts
 
@@ -65,6 +120,10 @@ jobs:
           test -n "$REGISTRY_AES_KEY_BASE64"
           test -n "$REQUEST_KEY_ID"
           test -n "$STATE_KEY_ID"
+          derived_args=()
+          if test -s "$RUNNER_TEMP/deed-registry-review-proof/derived-event.json"; then
+            derived_args+=(--derived-review-event "$RUNNER_TEMP/deed-registry-review-proof/derived-event.json")
+          fi
           APPEND_RESULT="$(node scripts/append-encrypted-registry.mjs \
             --index registry/index.json \
             --ciphertext-dir registry/ciphertexts \
@@ -76,6 +135,7 @@ jobs:
             --workflow-run-attempt "$GITHUB_RUN_ATTEMPT" \
             --workflow-ref "$GITHUB_WORKFLOW_REF" \
             --workflow-tip "$GITHUB_SHA" \
+            "${derived_args[@]}" \
             --receipt-dir "$RUNNER_TEMP/deed-registry-receipt")"
           REQUEST_SHA256="$(printf '%s' "$APPEND_RESULT" | jq -er .requestSha256)"
           ARTIFACT_NAME="$(printf '%s' "$APPEND_RESULT" | jq -er .artifactName)"
@@ -126,3 +186,4 @@ jobs:
         run: |
           rm -f "$RUNNER_TEMP/deed-registry-request-private.pem"
           rm -rf "$RUNNER_TEMP/deed-registry-receipt"
+          rm -rf "$RUNNER_TEMP/deed-registry-review-proof"

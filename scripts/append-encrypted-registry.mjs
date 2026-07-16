@@ -29,6 +29,7 @@ const workflowRunAttempt = argument("--workflow-run-attempt");
 const workflowRef = argument("--workflow-ref");
 const workflowTip = argument("--workflow-tip");
 const receiptDirectory = argument("--receipt-dir");
+const derivedReviewEventPath = optionalArgument("--derived-review-event");
 const key = decodeAesKey(process.env.REGISTRY_AES_KEY_BASE64);
 
 const indexBytes = readFileSync(indexPath);
@@ -54,7 +55,8 @@ const authority = {
   workflowRef,
   workflowTip,
 };
-const event = appendPlaintextEvent(state, intent, authority);
+const derivedReviewEvent = derivedReviewEventPath ? JSON.parse(readFileSync(derivedReviewEventPath, "utf8")) : null;
+const event = appendPlaintextEvent(state, intent, authority, new Date(), undefined, { derivedReviewEvent });
 const ciphertext = encryptState(state, key);
 const sequence = index.envelopes.length + 1;
 const issuedAt = event.issuedAt;
@@ -121,3 +123,4 @@ function argument(name) {
   if (index < 0 || !process.argv[index + 1]) throw new Error(`usage: append-encrypted-registry ${name} <value>`);
   return process.argv[index + 1];
 }
+function optionalArgument(name) { const index = process.argv.indexOf(name); return index < 0 ? null : process.argv[index + 1]; }
